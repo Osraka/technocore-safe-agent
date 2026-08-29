@@ -43,6 +43,35 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(unsigned.reason, "unsigned_sender")
         self.assertEqual(stranger.reason, "sender_not_allowlisted")
 
+    def test_accepts_only_canonical_public_github_pr_targets(self) -> None:
+        accepted = self.policy.decide(
+            RoomMessage(
+                1,
+                PEER,
+                "/pr https://github.com/example/project/pull/42",
+                "10",
+            )
+        )
+        self.assertEqual(accepted.action, "receipt")
+        self.assertEqual(accepted.target, "https://github.com/example/project/pull/42")
+
+        invalid_commands = (
+            "/pr",
+            "/pr  https://github.com/example/project/pull/42",
+            "/pr https://github.com/example/project/pull/42 extra",
+            "/pr https://evil.test/example/project/pull/42",
+            "/pr http://github.com/example/project/pull/42",
+        )
+        for index, command in enumerate(invalid_commands, start=2):
+            with self.subTest(command=command):
+                decision = self.policy.decide(
+                    RoomMessage(index, PEER, command, str(index + 10))
+                )
+                self.assertEqual(
+                    (decision.action, decision.reason),
+                    ("ignore", "invalid_pull_request_url"),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

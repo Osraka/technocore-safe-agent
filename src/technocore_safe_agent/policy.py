@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from technocore_safe_agent.protocol import RoomMessage
+from technocore_safe_agent.receipt import (
+    GitHubReceiptError,
+    parse_github_pull_request_url,
+)
 
 
 @dataclass(frozen=True)
@@ -12,6 +16,7 @@ class Decision:
     action: str
     reason: str
     reply: str | None = None
+    target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -30,14 +35,27 @@ class CommandPolicy:
 
         replies = {
             "/ping": "pong",
-            "/help": "Commands: /ping, /status, /about, /help",
-            "/status": "Osraka safe responder is online. It executes no room-supplied tools.",
+            "/help": "Commands: /ping, /status, /about, /help, /pr <public GitHub PR URL>",
+            "/status": (
+                "Osraka safe responder is online. It reads public GitHub PR metadata "
+                "only and executes no room-supplied tools."
+            ),
             "/about": (
                 "Keychain-backed Technocore responder. Signed commands only; "
-                "no shell, file, network-tool, or arbitrary prompt execution."
+                "fixed GitHub PR reads only; no shell, file, general URL, "
+                "or arbitrary prompt execution."
             ),
         }
         reply = replies.get(message.text)
-        if reply is None:
-            return Decision("ignore", "unsupported_command")
-        return Decision("reply", "allowed_command", reply)
+        if reply is not None:
+            return Decision("reply", "allowed_command", reply)
+        if message.text == "/pr" or message.text.startswith("/pr "):
+            raw_url = message.text.removeprefix("/pr ")
+            try:
+                reference = parse_github_pull_request_url(raw_url)
+            except GitHubReceiptError:
+                return Decision("ignore", "invalid_pull_request_url")
+            return Decision(
+                "receipt", "allowed_public_pull_request", target=reference.url
+            )
+        return Decision("ignore", "unsupported_command")

@@ -5,8 +5,9 @@ A small, deterministic Technocore responder that reuses an existing Ed25519
 
 This is intentionally not a general-purpose autonomous agent. Technocore room
 messages are anonymous or third-party input, so they are treated as data rather
-than prompts. The responder recognizes four exact commands and cannot execute a
-shell, read files, invoke tools, or follow instructions embedded in a message.
+than prompts. The responder recognizes five bounded commands and cannot execute
+a shell, read files, invoke room-selected tools, or follow instructions embedded
+in a message.
 
 ## Safety properties
 
@@ -20,6 +21,15 @@ shell, read files, invoke tools, or follow instructions embedded in a message.
   `--allow-any-signed` switch.
 - Unsigned senders, the agent's own messages, unsupported text, and non-allowlisted
   DIDs are ignored.
+- GitHub receipts accept only exact `https://github.com/OWNER/REPO/pull/NUMBER`
+  URLs. Reads are pinned to `api.github.com`; redirects, credentials, arbitrary
+  hosts, private repositories, and GitHub tokens are not supported.
+- Each receipt uses exactly three public GET requests and an in-process 60-second
+  cooldown. A failed read is recorded locally and is not retried automatically.
+- PR titles, bodies, comments, check names, and external links never enter a
+  receipt, so GitHub-hosted text cannot become an agent instruction.
+- CI is reported as `partial`, rather than `success`, when a response contains
+  more records than the bounded request observed.
 - First live startup defaults to the current room tail, so historical messages
   cannot unexpectedly trigger replies.
 - A write that lacks a verifiable acknowledgement is never retried automatically.
@@ -36,9 +46,46 @@ shell, read files, invoke tools, or follow instructions embedded in a message.
 | `/status` | A minimal safety/status statement |
 | `/about` | The responder's trust boundary |
 | `/help` | The exact command list |
+| `/pr https://github.com/OWNER/REPO/pull/NUMBER` | A portable signed public-PR snapshot |
 
-Everything else is ignored. Prefixes, suffixes, extra arguments, and prompt-like
-instructions do not match.
+Everything else is ignored. Non-canonical URLs, prefixes, suffixes, extra
+arguments, and prompt-like instructions do not match.
+
+## Signed contribution receipts
+
+A receipt binds one observation to the agent's existing Ed25519 DID and the
+pull request's exact head commit. It includes the public repository, PR number,
+author login, open/closed and merged state, head/base SHA, merge commit SHA when
+the anonymous API exposes it, bounded CI counts, GitHub's source update time, and the local
+observation time.
+
+The compact JSON wrapper contains a canonical payload, its SHA-256 digest, and a
+detached Ed25519 signature. It does **not** prove authorship, code quality,
+maintainer approval, or that a contribution remains in the repository later.
+It proves only that the named DID signed this bounded observation.
+
+Issue a receipt directly without posting to Technocore:
+
+```console
+technocore-safe-agent receipt \
+  https://github.com/OWNER/REPO/pull/NUMBER > receipt.json
+```
+
+Verify it without Keychain or network access:
+
+```console
+technocore-safe-agent verify-receipt receipt.json
+```
+
+In room dry-run mode, `/pr` emits `would_issue_receipt` and performs no GitHub
+request. In live mode, an allowlisted signed sender can request a receipt. A
+GitHub lookup failure advances the input cursor and emits `receipt_failed`
+locally; the agent does not loop on the same API request. If the later
+Technocore write is ambiguous, the existing manual room-inspection rule still
+applies and the cursor is not advanced.
+
+See [docs/receipt-threat-model.md](docs/receipt-threat-model.md) for the evidence
+boundary and failure table.
 
 ## Install
 
@@ -153,6 +200,11 @@ not weaken or bypass that delivery rule.
 | Unsigned message | Ignore | Yes |
 | Signed but non-allowlisted DID | Ignore | Yes |
 | Unsupported or extended command | Ignore | Yes |
+| Valid `/pr` in dry-run | Report intent; do not contact GitHub | No |
+| Valid `/pr`, complete public evidence, acknowledged write | Post one signed receipt | Yes |
+| Valid `/pr`, incomplete CI pagination | Post receipt with `ci=partial` | Yes |
+| GitHub lookup/rate-limit failure | Emit local failure; do not retry or post | Yes |
+| Invalid/private/non-canonical PR target | Ignore without network access | Yes |
 | Allowed exact command, acknowledged write | Reply once | Yes |
 | Allowed command, uncertain write result | Halt for manual inspection | No |
 | Reply acknowledged, state persistence fails | Halt for manual inspection | No |
@@ -173,6 +225,9 @@ python -m compileall -q src tests
 
 - Running an LLM over room messages
 - Executing arbitrary tools or commands
+- Reading arbitrary URLs, private GitHub repositories, review text, or PR bodies
+- Commenting, approving, merging, rerunning CI, or otherwise writing to GitHub
+- Claiming that a signed observation proves contribution ownership or acceptance
 - Automatic retries after ambiguous writes
 - Treating a `did:key` as proof of a real-world identity or trustworthiness
 - Storing or publishing the private seed

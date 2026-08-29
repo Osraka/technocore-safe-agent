@@ -9,6 +9,7 @@ from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
 from technocore_safe_agent.policy import CommandPolicy
 from technocore_safe_agent.protocol import RoomMessage, RoomSnapshot, TransportError
+from technocore_safe_agent.receipt import GitHubReceiptError
 from technocore_safe_agent.state import AgentState
 from technocore_safe_agent.state import StateError
 
@@ -35,6 +36,20 @@ class FakeClient:
         )
 
 
+class FakeReceiptService:
+    def __init__(self, *, failure: bool = False) -> None:
+        self.failure = failure
+        self.calls: list[str] = []
+
+    def issue(self, url: str) -> str:
+        self.calls.append(url)
+        if self.failure:
+            raise GitHubReceiptError(
+                "lookup failed", code="github_http_503", status=503
+            )
+        return '{"signed":"receipt"}'
+
+
 class AgentTests(unittest.TestCase):
     def _responder(
         self,
@@ -42,6 +57,7 @@ class AgentTests(unittest.TestCase):
         *,
         send: bool,
         client: FakeClient,
+        receipt_service: FakeReceiptService | None = None,
     ) -> SafeResponder:
         private_key = private_key_from_seed(SEED)
         did = did_from_private_key(private_key)
@@ -53,6 +69,7 @@ class AgentTests(unittest.TestCase):
             policy=CommandPolicy(own_did=did, allowed_dids=frozenset({PEER})),
             state=AgentState(),
             state_path=directory / "state.json",
+            receipt_service=receipt_service,
             send=send,
         )
 
@@ -118,6 +135,68 @@ class AgentTests(unittest.TestCase):
             event = responder.bootstrap_latest()
             self.assertEqual(event["cursor"], 4)
             self.assertEqual(responder.state.cursor_for("room"), 4)
+
+    def test_receipt_dry_run_never_contacts_github_or_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            receipts = FakeReceiptService()
+            responder = self._responder(
+                root,
+                send=False,
+                client=client,
+                receipt_service=receipts,
+            )
+            command = "/pr https://github.com/example/project/pull/42"
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, command, "1"),))
+            )
+            self.assertEqual(events[0]["event"], "would_issue_receipt")
+            self.assertFalse(events[0]["network_requested"])
+            self.assertEqual(receipts.calls, [])
+            self.assertEqual(client.posts, [])
+            self.assertFalse((root / "state.json").exists())
+
+    def test_live_receipt_is_looked_up_once_then_sent_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            receipts = FakeReceiptService()
+            responder = self._responder(
+                root,
+                send=True,
+                client=client,
+                receipt_service=receipts,
+            )
+            url = "https://github.com/example/project/pull/42"
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, f"/pr {url}", "1"),))
+            )
+            self.assertEqual(events[0]["event"], "sent_receipt")
+            self.assertEqual(receipts.calls, [url])
+            self.assertEqual(client.posts[0]["text"], '{"signed":"receipt"}')
+            self.assertEqual(AgentState.load(root / "state.json").cursor_for("room"), 1)
+
+    def test_failed_receipt_lookup_is_not_retried_or_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            receipts = FakeReceiptService(failure=True)
+            responder = self._responder(
+                root,
+                send=True,
+                client=client,
+                receipt_service=receipts,
+            )
+            url = "https://github.com/example/project/pull/42"
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, f"/pr {url}", "1"),))
+            )
+            self.assertEqual(events[0]["event"], "receipt_failed")
+            self.assertEqual(events[0]["error_code"], "github_http_503")
+            self.assertEqual(receipts.calls, [url])
+            self.assertEqual(client.posts, [])
+            self.assertEqual(AgentState.load(root / "state.json").cursor_for("room"), 1)
 
 
 if __name__ == "__main__":

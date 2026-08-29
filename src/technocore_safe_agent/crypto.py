@@ -7,8 +7,12 @@ import hashlib
 import re
 import unicodedata
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 BASE58BTC_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
@@ -36,6 +40,23 @@ def _base58btc_encode(data: bytes) -> str:
     return "1" * leading_zeroes + encoded
 
 
+def _base58btc_decode(value: str) -> bytes:
+    if not value:
+        raise ProtocolValueError("base58btc value must not be empty")
+    number = 0
+    for character in value:
+        try:
+            digit = BASE58BTC_ALPHABET.index(character)
+        except ValueError as error:
+            raise ProtocolValueError(
+                "base58btc value contains an invalid character"
+            ) from error
+        number = number * 58 + digit
+    decoded = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    leading_zeroes = len(value) - len(value.lstrip("1"))
+    return b"\x00" * leading_zeroes + decoded
+
+
 def private_key_from_seed(seed: str) -> Ed25519PrivateKey:
     """Load a production identity from an exact 32-byte hex seed.
 
@@ -59,6 +80,16 @@ def did_from_private_key(private_key: Ed25519PrivateKey) -> str:
     if DID_PATTERN.fullmatch(did) is None:
         raise IdentityError("derived an invalid Ed25519 did:key")
     return did
+
+
+def public_key_from_did(did: str) -> Ed25519PublicKey:
+    """Decode the exact Ed25519 multicodec form accepted by this agent."""
+
+    valid_did = validate_did(did)
+    decoded = _base58btc_decode(valid_did.removeprefix("did:key:z"))
+    if len(decoded) != 34 or not decoded.startswith(MULTICODEC_ED25519):
+        raise ProtocolValueError("DID does not contain a canonical Ed25519 public key")
+    return Ed25519PublicKey.from_public_bytes(decoded[len(MULTICODEC_ED25519) :])
 
 
 def fingerprint_of_did(did: str) -> str:
@@ -99,6 +130,30 @@ def sweep_text(text: str, *, limit: int = 4096) -> str:
     return swept
 
 
+def sign_detached(private_key: Ed25519PrivateKey, payload: bytes) -> str:
+    if not isinstance(payload, bytes):
+        raise ProtocolValueError("signed payload must be bytes")
+    signature = (
+        base64.urlsafe_b64encode(private_key.sign(payload)).decode("ascii").rstrip("=")
+    )
+    if not re.fullmatch(r"[A-Za-z0-9_-]{86}", signature):
+        raise IdentityError("generated an invalid Ed25519 signature")
+    return signature
+
+
+def verify_detached_signature(did: str, payload: bytes, signature: str) -> bool:
+    if not isinstance(payload, bytes) or not isinstance(signature, str):
+        return False
+    if re.fullmatch(r"[A-Za-z0-9_-]{86}", signature) is None:
+        return False
+    try:
+        decoded_signature = base64.urlsafe_b64decode(signature + "==")
+        public_key_from_did(did).verify(decoded_signature, payload)
+    except (InvalidSignature, ProtocolValueError, ValueError):
+        return False
+    return True
+
+
 def sign_room_message(
     private_key: Ed25519PrivateKey,
     room: str,
@@ -109,11 +164,4 @@ def sign_room_message(
     valid_nonce = validate_nonce(nonce)
     swept = sweep_text(text)
     canonical = f"{valid_room}|{valid_nonce}|{swept}".encode("utf-8")
-    signature = (
-        base64.urlsafe_b64encode(private_key.sign(canonical))
-        .decode("ascii")
-        .rstrip("=")
-    )
-    if not re.fullmatch(r"[A-Za-z0-9_-]{86}", signature):
-        raise IdentityError("generated an invalid Ed25519 signature")
-    return swept, signature
+    return swept, sign_detached(private_key, canonical)

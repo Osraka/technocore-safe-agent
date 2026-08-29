@@ -12,8 +12,11 @@ from technocore_safe_agent.crypto import (
     did_from_private_key,
     fingerprint_of_did,
     private_key_from_seed,
+    public_key_from_did,
+    sign_detached,
     sign_room_message,
     sweep_text,
+    verify_detached_signature,
 )
 from technocore_safe_agent.identity import (
     IdentityRecord,
@@ -80,6 +83,20 @@ class CryptoIdentityTests(unittest.TestCase):
         self.assertEqual(swept, "hello  world")
         self.assertEqual(len(signature), 86)
         self.assertEqual(sweep_text("\u200b\ntext"), "text")
+
+    def test_detached_signatures_verify_against_the_did_public_key(self) -> None:
+        key = private_key_from_seed(SEED)
+        did = did_from_private_key(key)
+        payload = b"canonical receipt payload"
+        signature = sign_detached(key, payload)
+
+        self.assertEqual(
+            public_key_from_did(did).public_bytes_raw(),
+            key.public_key().public_bytes_raw(),
+        )
+        self.assertTrue(verify_detached_signature(did, payload, signature))
+        self.assertFalse(verify_detached_signature(did, payload + b"!", signature))
+        self.assertFalse(verify_detached_signature(did, payload, "not-a-signature"))
 
 
 if __name__ == "__main__":

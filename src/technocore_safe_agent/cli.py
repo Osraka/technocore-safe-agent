@@ -31,6 +31,12 @@ from technocore_safe_agent.protocol import (
     TechnocoreClient,
     TransportError,
 )
+from technocore_safe_agent.receipt import (
+    ContributionReceiptService,
+    GitHubPublicClient,
+    GitHubReceiptError,
+    verify_signed_receipt,
+)
 from technocore_safe_agent.state import AgentState, StateError
 
 
@@ -81,6 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="retry once only after the room inspection found no matching write",
     )
 
+    receipt = commands.add_parser(
+        "receipt", help="issue a signed receipt for one public GitHub pull request"
+    )
+    _shared_identity_option(receipt)
+    receipt.add_argument("pull_request", help="canonical public GitHub PR URL")
+    receipt.add_argument("--timeout", type=float, default=15.0)
+
+    verify_receipt = commands.add_parser(
+        "verify-receipt", help="verify a saved contribution receipt without Keychain"
+    )
+    verify_receipt.add_argument("path", type=Path, help="receipt JSON file")
+
     run = commands.add_parser(
         "run", help="poll one room and apply the safe command policy"
     )
@@ -91,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url", help="server override; defaults to config or Technocore"
     )
     run.add_argument("--timeout", type=float, default=20.0)
+    run.add_argument(
+        "--github-timeout",
+        type=float,
+        default=15.0,
+        help="timeout for each fixed public GitHub API read",
+    )
     run.add_argument("--wait", type=float, default=10.0)
     run.add_argument("--limit", type=int, default=50)
     run.add_argument("--once", action="store_true", help="perform one read and exit")
@@ -204,6 +228,41 @@ def _recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _receipt(args: argparse.Namespace) -> int:
+    record, private_key = _load_identity(args.identity)
+    service = ContributionReceiptService(
+        issuer_did=record.did,
+        private_key=private_key,
+        client=GitHubPublicClient(timeout=args.timeout),
+    )
+    print(service.issue(args.pull_request), flush=True)
+    return 0
+
+
+def _verify_receipt(args: argparse.Namespace) -> int:
+    resolved = args.path.expanduser().resolve()
+    try:
+        raw = resolved.read_text(encoding="utf-8")
+    except OSError as error:
+        raise GitHubReceiptError(
+            f"cannot read receipt file {resolved}: {error}",
+            code="receipt_read_error",
+        ) from error
+    payload = verify_signed_receipt(raw)
+    wrapper = json.loads(raw)
+    _print_event(
+        {
+            "status": "valid",
+            "schema": payload["schema"],
+            "issuer": payload["issuer"],
+            "repository": payload["repository"],
+            "pull_number": payload["pull_number"],
+            "payload_sha256": wrapper["payload_sha256"],
+        }
+    )
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     record, private_key = _load_identity(args.identity)
     identity_path, config_path, default_state_path = _paths_beside_identity(args)
@@ -242,6 +301,11 @@ def _run(args: argparse.Namespace) -> int:
         allowed_dids=allowed,
         allow_any_signed=args.allow_any_signed,
     )
+    receipt_service = ContributionReceiptService(
+        issuer_did=record.did,
+        private_key=private_key,
+        client=GitHubPublicClient(timeout=args.github_timeout),
+    )
     responder = SafeResponder(
         room=room,
         did=record.did,
@@ -250,6 +314,7 @@ def _run(args: argparse.Namespace) -> int:
         policy=policy,
         state=state,
         state_path=state_path,
+        receipt_service=receipt_service,
         send=args.send,
     )
 
@@ -307,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
             return _provision(args)
         if args.command == "recover":
             return _recover(args)
+        if args.command == "receipt":
+            return _receipt(args)
+        if args.command == "verify-receipt":
+            return _verify_receipt(args)
         return _run(args)
     except KeyboardInterrupt:
         print("stopped", file=sys.stderr)
@@ -317,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         ConfigError,
         IdentityError,
+        GitHubReceiptError,
         ProtocolValueError,
         ResponseError,
         StateError,
