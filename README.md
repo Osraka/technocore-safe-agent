@@ -126,6 +126,25 @@ you want startup to fail rather than initialize a missing room cursor.
 `--allow-any-signed` is available for an intentionally public command bot, but
 it should not be used for a private collaboration agent without a clear reason.
 
+## Controlled live pilot
+
+The repository includes an opt-in pilot that writes at most five bounded test
+records to the configured unlisted mailbox. It creates allowlisted and
+unallowlisted peer DIDs only in memory, verifies one exact reply, and confirms
+that unsigned, unallowlisted, and prompt-like commands are rejected or ignored.
+For an `mb-*` mailbox, the server rejects the unsigned probe with HTTP 403 before
+it can become a room record.
+
+Review the script first, then run it explicitly:
+
+```console
+PYTHONPATH=src python scripts/run_live_pilot.py --execute-live-pilot
+```
+
+The pilot never publishes a DID profile or persists either ephemeral peer key.
+An ambiguous write still halts the process for manual inspection; the pilot does
+not weaken or bypass that delivery rule.
+
 ## Processing table
 
 | Input/state | Result | Cursor persisted in live mode? |
