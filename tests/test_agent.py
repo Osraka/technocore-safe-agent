@@ -9,6 +9,10 @@ from unittest.mock import patch
 
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.audit import AuditError, SignedAuditLog
+from technocore_safe_agent.capabilities import (
+    CapabilityPolicyFile,
+    CapabilityRateLimiter,
+)
 from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
 from technocore_safe_agent.delivery import DeliveryJournal
 from technocore_safe_agent.policy import CommandPolicy
@@ -332,6 +336,117 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(pending.status, "acknowledged")
             self.assertEqual(responder.state.cursor_for("room"), 0)
             self.assertFalse((root / "state.json").exists())
+
+    def test_failed_receipt_lookup_consumes_capability_before_external_work(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_path = root / "capabilities.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "technocore-safe-agent-capabilities-v1",
+                        "principals": {
+                            PEER: {
+                                "enabled": True,
+                                "commands": ["/pr"],
+                                "repositories": ["example/project"],
+                                "max_requests_per_hour": 1,
+                            }
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            policy_path.chmod(0o600)
+            service = FakeReceiptService(failure=True)
+            responder = self._responder(
+                root,
+                send=True,
+                client=FakeClient(),
+                receipt_service=service,
+            )
+            responder.policy = CommandPolicy(
+                own_did=responder.did,
+                capabilities=CapabilityPolicyFile(policy_path),
+                rate_limiter=CapabilityRateLimiter(
+                    state=responder.state,
+                    state_path=responder.state_path,
+                    consume=True,
+                    clock=lambda: 10_000,
+                ),
+            )
+            command = "/pr https://github.com/example/project/pull/42"
+
+            events = responder.process_snapshot(
+                RoomSnapshot(
+                    "room",
+                    1,
+                    2,
+                    (
+                        RoomMessage(1, PEER, command, "1"),
+                        RoomMessage(2, PEER, command, "2"),
+                    ),
+                )
+            )
+
+            self.assertEqual(events[0]["event"], "receipt_failed")
+            self.assertEqual(events[1]["reason"], "rate_limited")
+            self.assertEqual(
+                service.calls, ["https://github.com/example/project/pull/42"]
+            )
+
+    def test_rate_limit_persistence_failure_prevents_the_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy_path = root / "capabilities.json"
+            policy_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "technocore-safe-agent-capabilities-v1",
+                        "principals": {
+                            PEER: {
+                                "enabled": True,
+                                "commands": ["/ping"],
+                                "repositories": [],
+                                "max_requests_per_hour": 1,
+                            }
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            policy_path.chmod(0o600)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            responder.policy = CommandPolicy(
+                own_did=responder.did,
+                capabilities=CapabilityPolicyFile(policy_path),
+                rate_limiter=CapabilityRateLimiter(
+                    state=responder.state,
+                    state_path=responder.state_path,
+                    consume=True,
+                    clock=lambda: 10_000,
+                ),
+            )
+
+            with patch.object(
+                responder.state, "save", side_effect=StateError("disk full")
+            ):
+                with self.assertRaisesRegex(StateError, "disk full"):
+                    responder.process_snapshot(
+                        RoomSnapshot(
+                            "room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),)
+                        )
+                    )
+
+            self.assertEqual(client.posts, [])
+            self.assertEqual(responder.state.cursor_for("room"), 0)
 
 
 if __name__ == "__main__":

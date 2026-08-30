@@ -55,6 +55,25 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_run_parser_accepts_capability_policy_as_a_sender_mode(self) -> None:
+        args = build_parser().parse_args(
+            ["run", "--capability-policy", "capabilities.json"]
+        )
+        self.assertEqual(args.capability_policy, Path("capabilities.json"))
+        self.assertEqual(args.allow_did, [])
+        self.assertFalse(args.allow_any_signed)
+
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                [
+                    "run",
+                    "--capability-policy",
+                    "capabilities.json",
+                    "--allow-did",
+                    did_from_private_key(private_key_from_seed(SEED)),
+                ]
+            )
+
     def test_audit_verify_parser_requires_only_the_log_path(self) -> None:
         args = build_parser().parse_args(["audit", "verify", "audit.jsonl"])
         self.assertEqual(args.command, "audit")

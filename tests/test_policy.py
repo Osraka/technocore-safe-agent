@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
+from technocore_safe_agent.capabilities import (
+    CapabilityError,
+    CapabilityPolicyFile,
+    CapabilityRateLimiter,
+)
 from technocore_safe_agent.policy import CommandPolicy
 from technocore_safe_agent.protocol import RoomMessage
+from technocore_safe_agent.state import AgentState
 
 
 OWN = "did:key:z6MkmjY8Bmy9CnWW1JPfQWA9tK7KT7C9CAeWQKZmYtXyS2uH"
@@ -79,6 +88,139 @@ class PolicyTests(unittest.TestCase):
                     (decision.action, decision.reason),
                     ("ignore", "invalid_pull_request_url"),
                 )
+
+    def test_capabilities_scope_commands_and_repositories_then_reload_revocation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability_path = root / "capabilities.json"
+            state_path = root / "state.json"
+
+            def write_policy(*, enabled: bool) -> None:
+                capability_path.write_text(
+                    json.dumps(
+                        {
+                            "schema": "technocore-safe-agent-capabilities-v1",
+                            "principals": {
+                                PEER: {
+                                    "enabled": enabled,
+                                    "commands": ["/status", "/pr"],
+                                    "repositories": ["foundry-rs/*"],
+                                    "max_requests_per_hour": 10,
+                                }
+                            },
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                capability_path.chmod(0o600)
+
+            write_policy(enabled=True)
+            policy = CommandPolicy(
+                own_did=OWN,
+                capabilities=CapabilityPolicyFile(capability_path),
+                rate_limiter=CapabilityRateLimiter(
+                    state=AgentState(),
+                    state_path=state_path,
+                    consume=False,
+                    clock=lambda: 10_000,
+                ),
+            )
+
+            allowed = policy.decide(RoomMessage(1, PEER, "/status", "10"))
+            command_denied = policy.decide(RoomMessage(2, PEER, "/ping", "11"))
+            repo_allowed = policy.decide(
+                RoomMessage(
+                    3,
+                    PEER,
+                    "/pr https://github.com/Foundry-RS/foundry/pull/42",
+                    "12",
+                )
+            )
+            repo_denied = policy.decide(
+                RoomMessage(
+                    4,
+                    PEER,
+                    "/pr https://github.com/base/account-sdk/pull/1",
+                    "13",
+                )
+            )
+            write_policy(enabled=False)
+            revoked = policy.decide(RoomMessage(5, PEER, "/status", "14"))
+
+            self.assertEqual(allowed.action, "reply")
+            self.assertEqual(command_denied.reason, "command_not_granted")
+            self.assertEqual(repo_allowed.action, "receipt")
+            self.assertEqual(repo_denied.reason, "repository_not_granted")
+            self.assertEqual(revoked.reason, "principal_revoked")
+
+    def test_malformed_policy_update_fails_closed_instead_of_using_stale_grant(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability_path = root / "capabilities.json"
+            capability_path.write_text("{}\n", encoding="utf-8")
+            capability_path.chmod(0o600)
+            policy = CommandPolicy(
+                own_did=OWN,
+                capabilities=CapabilityPolicyFile(capability_path),
+                rate_limiter=CapabilityRateLimiter(
+                    state=AgentState(),
+                    state_path=root / "state.json",
+                    consume=False,
+                ),
+            )
+
+            with self.assertRaises(CapabilityError):
+                policy.decide(RoomMessage(1, PEER, "/status", "10"))
+
+    def test_capability_rate_limit_is_applied_after_scope_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability_path = root / "capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "technocore-safe-agent-capabilities-v1",
+                        "principals": {
+                            PEER: {
+                                "enabled": True,
+                                "commands": ["/status"],
+                                "repositories": [],
+                                "max_requests_per_hour": 1,
+                            }
+                        },
+                    },
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            capability_path.chmod(0o600)
+            state = AgentState()
+            policy = CommandPolicy(
+                own_did=OWN,
+                capabilities=CapabilityPolicyFile(capability_path),
+                rate_limiter=CapabilityRateLimiter(
+                    state=state,
+                    state_path=root / "state.json",
+                    consume=True,
+                    clock=lambda: 10_000,
+                ),
+            )
+
+            unsupported = policy.decide(RoomMessage(1, PEER, "/ping", "10"))
+            first = policy.decide(RoomMessage(2, PEER, "/status", "11"))
+            limited = policy.decide(RoomMessage(3, PEER, "/status", "12"))
+
+            self.assertEqual(unsupported.reason, "command_not_granted")
+            self.assertEqual(first.action, "reply")
+            self.assertEqual(limited.reason, "rate_limited")
+            self.assertEqual(state.capability_requests[PEER], [10_000])
 
 
 if __name__ == "__main__":

@@ -43,6 +43,42 @@ class StateTests(unittest.TestCase):
             with self.assertRaisesRegex(StateError, "unsupported schema"):
                 AgentState.load(path)
 
+    def test_loads_legacy_state_without_capability_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "technocore-safe-agent-state-v1",
+                        "cursors": {"room": 8},
+                        "nonces": {"room": 100},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = AgentState.load(path)
+
+            self.assertEqual(state.capability_requests, {})
+
+    def test_rejects_invalid_capability_principal_in_persistent_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "technocore-safe-agent-state-v1",
+                        "cursors": {},
+                        "nonces": {},
+                        "capability_requests": {"not-a-did": [10_000]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(StateError, "invalid principal"):
+                AgentState.load(path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,11 @@ from typing import Any
 from technocore_safe_agent import __version__
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.audit import AuditError, SignedAuditLog
+from technocore_safe_agent.capabilities import (
+    CapabilityError,
+    CapabilityPolicyFile,
+    CapabilityRateLimiter,
+)
 from technocore_safe_agent.config import AgentConfig, ConfigError
 from technocore_safe_agent.crypto import (
     IdentityError,
@@ -201,6 +206,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-any-signed",
         action="store_true",
         help="allow any signed DID; appropriate only for intentionally public bots",
+    )
+    senders.add_argument(
+        "--capability-policy",
+        type=Path,
+        help="mode-0600 per-DID command, repository, and rolling-rate policy",
     )
     run.add_argument(
         "--send",
@@ -410,9 +420,9 @@ def _run_with_identity(
 ) -> int:
     config = _load_active_config(record, config_path)
     room, base_url = _resolve_runtime_target(args, config)
-    allowed = _validated_allowed_senders(args)
     state_path = args.state.expanduser().resolve() if args.state else default_state_path
     state = AgentState.load(state_path)
+    policy = _command_policy(args, record.did, state, state_path)
     delivery_journal, audit_log = _live_artifacts(args, identity_path, record.did)
     client = TechnocoreClient(base_url=base_url, timeout=args.timeout)
     responder = SafeResponder(
@@ -420,11 +430,7 @@ def _run_with_identity(
         did=record.did,
         private_key=private_key,
         client=client,
-        policy=CommandPolicy(
-            own_did=record.did,
-            allowed_dids=allowed,
-            allow_any_signed=args.allow_any_signed,
-        ),
+        policy=policy,
         state=state,
         state_path=state_path,
         receipt_service=ContributionReceiptService(
@@ -476,13 +482,36 @@ def _resolve_runtime_target(
     return room, base_url
 
 
-def _validated_allowed_senders(args: argparse.Namespace) -> frozenset[str]:
+def _command_policy(
+    args: argparse.Namespace,
+    own_did: str,
+    state: AgentState,
+    state_path: Path,
+) -> CommandPolicy:
+    if args.capability_policy is not None:
+        capabilities = CapabilityPolicyFile(args.capability_policy)
+        capabilities.load()
+        return CommandPolicy(
+            own_did=own_did,
+            capabilities=capabilities,
+            rate_limiter=CapabilityRateLimiter(
+                state=state,
+                state_path=state_path,
+                consume=args.send,
+            ),
+        )
+
     allowed = frozenset(validate_did(did) for did in args.allow_did)
     if args.send and not allowed and not args.allow_any_signed:
         raise ProtocolValueError(
-            "--send requires at least one --allow-did or the explicit --allow-any-signed flag"
+            "--send requires --capability-policy, at least one --allow-did, "
+            "or the explicit --allow-any-signed flag"
         )
-    return allowed
+    return CommandPolicy(
+        own_did=own_did,
+        allowed_dids=allowed,
+        allow_any_signed=args.allow_any_signed,
+    )
 
 
 def _live_artifacts(
@@ -592,6 +621,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except (
         AuditError,
+        CapabilityError,
         ConfigError,
         DeliveryError,
         IdentityError,

@@ -18,7 +18,8 @@ in a message.
   enabled; the agent never falls back to an unverified TLS context.
 - Dry-run is the default. `--send` is required for writes.
 - Live mode requires either an explicit DID allowlist or the deliberately broad
-  `--allow-any-signed` switch.
+  `--allow-any-signed` switch. A strict capability file can instead limit each
+  DID by command, GitHub repository scope, and persistent rolling-hour quota.
 - Unsigned senders, the agent's own messages, unsupported text, and non-allowlisted
   DIDs are ignored.
 - GitHub receipts accept only exact `https://github.com/OWNER/REPO/pull/NUMBER`
@@ -217,6 +218,46 @@ private seed or raw mailbox name, and is written with mode `0600`.
 `--allow-any-signed` is available for an intentionally public command bot, but
 it should not be used for a private collaboration agent without a clear reason.
 
+## Least-privilege capability policy
+
+For command- and repository-level authorization, create a private policy file:
+
+```json
+{
+  "schema": "technocore-safe-agent-capabilities-v1",
+  "principals": {
+    "did:key:z6MkREPLACE_WITH_PEER_DID": {
+      "enabled": true,
+      "commands": ["/pr"],
+      "repositories": ["foundry-rs/*", "alloy-rs/alloy"],
+      "max_requests_per_hour": 3
+    }
+  }
+}
+```
+
+Set mode `0600`, then select it instead of a legacy sender flag:
+
+```console
+chmod 600 safe-agent-capabilities.json
+technocore-safe-agent run \
+  --capability-policy safe-agent-capabilities.json \
+  --start-at latest \
+  --send
+```
+
+The file is reloaded before every signed third-party message decision. Removing
+a DID or setting its `enabled` field to `false` revokes its next request without
+a restart. Invalid updates halt processing before external work; the agent does
+not silently retain a cached old grant. Live requests reserve their quota in
+`safe-agent-state.json` before a reply or GitHub lookup, while dry-run checks do
+not consume capacity.
+
+Repository matching accepts only an exact `owner/repository` or `owner/*` scope.
+The capability file is mutually exclusive with `--allow-did` and
+`--allow-any-signed`. See [docs/capability-policy.md](docs/capability-policy.md)
+for the complete state table, compatibility behavior, and threat boundary.
+
 ## Signed local audit log
 
 Production `run --send` writes `safe-agent-audit.jsonl` beside the public
@@ -321,6 +362,8 @@ python -m compileall -q src tests
 - Automatic retries after ambiguous writes
 - Claiming that the local audit log alone detects tail rollback without a trusted
   external head checkpoint
+- Treating a local capability policy as protection against compromise of the
+  same operating-system account
 - Treating a `did:key` as proof of a real-world identity or trustworthiness
 - Storing or publishing the private seed
 
