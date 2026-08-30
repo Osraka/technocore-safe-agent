@@ -261,6 +261,40 @@ The capability file is mutually exclusive with `--allow-did` and
 `--allow-any-signed`. See [docs/capability-policy.md](docs/capability-policy.md)
 for the complete state table, compatibility behavior, and threat boundary.
 
+## Offline operational health
+
+Before placing the responder under a process supervisor, verify its local
+runtime artifacts without reading Keychain or contacting the network:
+
+```console
+technocore-safe-agent health \
+  --capability-policy safe-agent-capabilities.json
+```
+
+The command validates the public identity, active config binding, cursor and
+nonce state, capability policy, delivery journal, signed audit chain, and
+process lock. It prints one bounded JSON event containing status codes only;
+room names, DIDs, paths, journal text, and private material are omitted.
+
+`ready` and `running` return exit code 0. `unhealthy` returns 2.
+`recovery_required` returns 3 and means a valid delivery journal exists while
+the live process lock is free; resolve it with `recover-delivery` before a
+supervisor restarts the agent. Require a running process explicitly with:
+
+```console
+technocore-safe-agent health \
+  --capability-policy safe-agent-capabilities.json \
+  --expect-running
+```
+
+Use `--expected-audit-head SHA256` when an externally preserved checkpoint is
+available. A missing audit log is otherwise valid before the first live
+decision, but a missing state file is not: managed operation must not silently
+discard its cursor or nonce history. Run `technocore-safe-agent doctor`
+separately to verify Keychain custody. See
+[docs/operational-health.md](docs/operational-health.md) for the full state
+table and supervisor boundary.
+
 ## Signed local audit log
 
 Production `run --send` writes `safe-agent-audit.jsonl` beside the public

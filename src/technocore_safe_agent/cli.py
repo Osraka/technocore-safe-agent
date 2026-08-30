@@ -27,6 +27,7 @@ from technocore_safe_agent.crypto import (
 )
 from technocore_safe_agent.delivery import DeliveryError, DeliveryJournal
 from technocore_safe_agent.delivery_recovery import recover_delivery
+from technocore_safe_agent.health import HealthPaths, inspect_operational_health
 from technocore_safe_agent.identity import (
     DEFAULT_IDENTITY_PATH,
     IdentityRecord,
@@ -71,6 +72,31 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor", help="verify public identity and Keychain custody"
     )
     _shared_identity_option(doctor)
+
+    health = commands.add_parser(
+        "health", help="inspect managed-agent readiness without Keychain or network"
+    )
+    _shared_identity_option(health)
+    health.add_argument("--config", type=Path, help="active agent config path")
+    health.add_argument("--state", type=Path, help="persistent state path")
+    health.add_argument(
+        "--capability-policy",
+        type=Path,
+        required=True,
+        help="mode-0600 capability policy used by the managed agent",
+    )
+    health.add_argument("--journal", type=Path, help="delivery journal path")
+    health.add_argument("--lock", type=Path, help="live process lock path")
+    health.add_argument("--audit-log", type=Path, help="signed audit log path")
+    health.add_argument(
+        "--expected-audit-head",
+        help="optional trusted SHA-256 audit checkpoint",
+    )
+    health.add_argument(
+        "--expect-running",
+        action="store_true",
+        help="return unhealthy unless the live process lock is held",
+    )
 
     provision = commands.add_parser(
         "provision", help="create one unlisted signed mailbox and local config"
@@ -247,6 +273,35 @@ def _doctor(args: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+def _health(args: argparse.Namespace) -> int:
+    identity_path = args.identity.expanduser().absolute()
+    config_path = _health_path(args.config, identity_path, "safe-agent-config.json")
+    state_path = _health_path(args.state, identity_path, "safe-agent-state.json")
+    report = inspect_operational_health(
+        HealthPaths(
+            identity=identity_path,
+            config=config_path,
+            state=state_path,
+            capability_policy=args.capability_policy,
+            journal=_health_path(
+                args.journal, identity_path, "safe-agent-delivery.json"
+            ),
+            audit=_health_path(args.audit_log, identity_path, "safe-agent-audit.jsonl"),
+            lock=_health_path(args.lock, identity_path, "safe-agent.lock"),
+        ),
+        expected_audit_head=args.expected_audit_head,
+        expect_running=args.expect_running,
+    )
+    _print_event(report.to_event())
+    return report.exit_code
+
+
+def _health_path(selected: Path | None, identity_path: Path, default_name: str) -> Path:
+    if selected is not None:
+        return selected.expanduser().absolute()
+    return identity_path.with_name(default_name)
 
 
 def _paths_beside_identity(args: argparse.Namespace) -> tuple[Path, Path, Path]:
@@ -604,6 +659,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         handler = {
             "doctor": _doctor,
+            "health": _health,
             "provision": _provision,
             "recover": _recover,
             "recover-delivery": _recover_delivery,
