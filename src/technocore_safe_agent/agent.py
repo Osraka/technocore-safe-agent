@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from technocore_safe_agent.crypto import sign_room_message
+from technocore_safe_agent.audit import AuditError, SignedAuditLog
+from technocore_safe_agent.crypto import fingerprint_of_did, sign_room_message
 from technocore_safe_agent.delivery import (
     DeliveryError,
     DeliveryJournal,
@@ -45,6 +48,7 @@ class SafeResponder:
     state_path: Path
     receipt_service: ReceiptIssuer | None = None
     delivery_journal: DeliveryJournal | None = None
+    audit_log: SignedAuditLog | None = None
     send: bool = False
 
     def bootstrap_latest(self) -> dict[str, Any]:
@@ -84,7 +88,7 @@ class SafeResponder:
                 continue
             handled = True
             event = self._event_for_message(message)
-            self._persist_processed_message(message.seq, event["event"])
+            self._persist_processed_message(message, event)
             cursor = message.seq
             events.append(event)
 
@@ -107,6 +111,7 @@ class SafeResponder:
         decision = self.policy.decide(message)
         event: dict[str, Any] = {
             "event": decision.action,
+            "decision": decision.action,
             "room": self.room,
             "seq": message.seq,
             "sender": message.sender,
@@ -171,25 +176,30 @@ class SafeResponder:
                 "event": "sent_receipt",
                 "reply_seq": posted.seq,
                 "pull_request": pull_request,
+                "receipt_sha256": hashlib.sha256(receipt.encode("utf-8")).hexdigest(),
             }
         )
         return event
 
-    def _persist_processed_message(self, sequence: int, event_name: str) -> None:
-        self.state.advance_cursor(self.room, sequence)
+    def _persist_processed_message(
+        self, message: RoomMessage, event: dict[str, Any]
+    ) -> None:
+        if self.send and self.audit_log is not None:
+            self._append_audit_record(message, event)
+        self.state.advance_cursor(self.room, message.seq)
         if not self.send:
             return
         try:
             self.state.save(self.state_path)
         except StateError as error:
-            if event_name in {"sent", "sent_receipt"}:
+            if event["event"] in {"sent", "sent_receipt"}:
                 raise UncertainWriteError(
                     "reply was acknowledged but its cursor could not be persisted; "
                     "inspect the room and repair the state file before restarting"
                 ) from error
             raise
 
-        if event_name in {"sent", "sent_receipt"} and self.delivery_journal:
+        if event["event"] in {"sent", "sent_receipt"} and self.delivery_journal:
             try:
                 self.delivery_journal.clear()
             except DeliveryError as error:
@@ -197,6 +207,27 @@ class SafeResponder:
                     "reply and cursor were persisted but the delivery journal could not "
                     "be cleared; run recover-delivery before restarting"
                 ) from error
+
+    def _append_audit_record(self, message: RoomMessage, event: dict[str, Any]) -> None:
+        audit_log = self.audit_log
+        if audit_log is None:
+            raise AuditError("audit log is not configured")
+        sender_fingerprint = (
+            fingerprint_of_did(message.sender) if message.is_signed else None
+        )
+        audit_log.append(
+            issuer_did=self.did,
+            private_key=self.private_key,
+            observed_at=datetime.now(UTC),
+            input_sequence=message.seq,
+            sender_fingerprint=sender_fingerprint,
+            sender_authenticated=message.is_signed,
+            policy_decision=event["decision"],
+            policy_reason=event["reason"],
+            outcome=event["event"],
+            receipt_sha256=event.get("receipt_sha256"),
+            response_sequence=event.get("reply_seq"),
+        )
 
     def _send_text(self, text: str, input_sequence: int) -> RoomMessage:
         if self.delivery_journal is not None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
+from technocore_safe_agent.audit import AuditError, SignedAuditLog
 from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
 from technocore_safe_agent.delivery import DeliveryJournal
 from technocore_safe_agent.policy import CommandPolicy
@@ -258,6 +261,77 @@ class AgentTests(unittest.TestCase):
             self.assertIsNotNone(acknowledged)
             self.assertEqual(acknowledged.status, "acknowledged")
             self.assertEqual(acknowledged.reply_sequence, 10)
+
+    def test_live_decision_writes_only_sanitized_signed_audit_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(root, send=True, client=FakeClient())
+            responder.audit_log = SignedAuditLog(root / "audit.jsonl")
+
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),))
+            )
+
+            summary = responder.audit_log.verify()
+            raw = (root / "audit.jsonl").read_text(encoding="utf-8")
+            self.assertEqual(events[0]["event"], "sent")
+            self.assertEqual(summary.entries, 1)
+            self.assertNotIn("room", raw)
+            self.assertNotIn(PEER, raw)
+            self.assertNotIn("/ping", raw)
+            self.assertNotIn("pong", raw)
+            payload = json.loads(raw)["payload"]
+            self.assertEqual(payload["policy_decision"], "reply")
+            self.assertEqual(payload["outcome"], "sent")
+            self.assertEqual(payload["response_sequence"], 10)
+
+    def test_live_receipt_audit_binds_exact_rendered_receipt_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(
+                root,
+                send=True,
+                client=FakeClient(),
+                receipt_service=FakeReceiptService(),
+            )
+            responder.audit_log = SignedAuditLog(root / "audit.jsonl")
+            url = "https://github.com/example/project/pull/42"
+
+            responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, f"/pr {url}", "1"),))
+            )
+
+            payload = json.loads((root / "audit.jsonl").read_text())["payload"]
+            self.assertEqual(payload["policy_decision"], "receipt")
+            self.assertEqual(payload["outcome"], "sent_receipt")
+            self.assertEqual(
+                payload["receipt_sha256"],
+                hashlib.sha256(b'{"signed":"receipt"}').hexdigest(),
+            )
+
+    def test_audit_failure_preserves_acknowledged_delivery_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            journal = DeliveryJournal(root / "delivery.json")
+            responder.delivery_journal = journal
+            audit_path = root / "audit.jsonl"
+            audit_path.write_text("", encoding="utf-8")
+            audit_path.chmod(0o640)
+            responder.audit_log = SignedAuditLog(audit_path)
+
+            with self.assertRaisesRegex(AuditError, "permissions"):
+                responder.process_snapshot(
+                    RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),))
+                )
+
+            pending = journal.load()
+            self.assertEqual(len(client.posts), 1)
+            self.assertIsNotNone(pending)
+            self.assertEqual(pending.status, "acknowledged")
+            self.assertEqual(responder.state.cursor_for("room"), 0)
+            self.assertFalse((root / "state.json").exists())
 
 
 if __name__ == "__main__":

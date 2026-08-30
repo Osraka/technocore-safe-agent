@@ -57,7 +57,13 @@ class RoomMessage:
 
     @property
     def is_signed(self) -> bool:
-        return self.sender.startswith("did:key:z6Mk") and self.nonce is not None
+        if self.nonce is None:
+            return False
+        try:
+            validate_did(self.sender)
+        except ProtocolValueError:
+            return False
+        return True
 
 
 @dataclass(frozen=True)

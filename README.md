@@ -39,6 +39,9 @@ in a message.
 - Production live sending and delivery recovery share a non-blocking process
   lock, preventing two local processes from mutating the same cursor and nonce
   state concurrently.
+- Each message processed by production `run --send` creates a DID-signed,
+  hash-chained audit record containing only bounded decision metadata. Raw room
+  names, message text, PR URLs, and peer DIDs are excluded.
 - Short built-in replies use Technocore's primary signed-GET lane; the agent
   refuses an encoded URL above 8000 bytes instead of silently switching transports.
 - Cursor and nonce state is written atomically with mode `0600`.
@@ -214,6 +217,35 @@ private seed or raw mailbox name, and is written with mode `0600`.
 `--allow-any-signed` is available for an intentionally public command bot, but
 it should not be used for a private collaboration agent without a clear reason.
 
+## Signed local audit log
+
+Production `run --send` writes `safe-agent-audit.jsonl` beside the public
+identity by default. Each mode-`0600` record binds the input sequence, a short
+peer-DID fingerprint (or `null` for an unauthenticated sender), policy decision,
+outcome, exact rendered-receipt hash when applicable, response sequence, and the
+previous canonical record hash to the agent's Ed25519 DID.
+
+Verify every schema invariant, payload digest, DID signature, sequence, and
+hash-chain link without Keychain or network access:
+
+```console
+technocore-safe-agent audit verify safe-agent-audit.jsonl
+```
+
+The command prints the current `head_sha256`. Preserve a trusted checkpoint
+outside the log when rollback detection matters, then verify against it:
+
+```console
+technocore-safe-agent audit verify safe-agent-audit.jsonl \
+  --expected-head SHA256_FROM_A_TRUSTED_CHECKPOINT
+```
+
+Without `--expected-head`, signatures and chaining detect record changes,
+insertions, reordering, and removal from the middle, but a valid old prefix made
+by truncating the tail still verifies. This is a signed local integrity log, not
+an externally anchored transparency service. See
+[docs/audit-threat-model.md](docs/audit-threat-model.md) for its exact boundary.
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
@@ -287,6 +319,8 @@ python -m compileall -q src tests
 - Commenting, approving, merging, rerunning CI, or otherwise writing to GitHub
 - Claiming that a signed observation proves contribution ownership or acceptance
 - Automatic retries after ambiguous writes
+- Claiming that the local audit log alone detects tail rollback without a trusted
+  external head checkpoint
 - Treating a `did:key` as proof of a real-world identity or trustworthiness
 - Storing or publishing the private seed
 

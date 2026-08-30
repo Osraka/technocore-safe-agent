@@ -8,6 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 
+from technocore_safe_agent.audit import SignedAuditLog
 from technocore_safe_agent.cli import build_parser, main
 from technocore_safe_agent.crypto import (
     did_from_private_key,
@@ -54,6 +55,43 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_audit_verify_parser_requires_only_the_log_path(self) -> None:
+        args = build_parser().parse_args(["audit", "verify", "audit.jsonl"])
+        self.assertEqual(args.command, "audit")
+        self.assertEqual(args.audit_command, "verify")
+        self.assertEqual(args.path, Path("audit.jsonl"))
+        self.assertIsNone(args.expected_head)
+
+    def test_audit_verify_is_offline_and_accepts_a_trusted_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.jsonl"
+            key = private_key_from_seed(SEED)
+            did = did_from_private_key(key)
+            head = SignedAuditLog(path).append(
+                issuer_did=did,
+                private_key=key,
+                observed_at=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+                input_sequence=2,
+                sender_fingerprint=None,
+                sender_authenticated=False,
+                policy_decision="ignore",
+                policy_reason="unsigned_sender",
+                outcome="ignore",
+                receipt_sha256=None,
+                response_sequence=None,
+            )
+            stdout = io.StringIO()
+
+            with redirect_stdout(stdout):
+                result = main(["audit", "verify", str(path), "--expected-head", head])
+
+            event = json.loads(stdout.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(event["status"], "valid")
+            self.assertEqual(event["entries"], 1)
+            self.assertEqual(event["issuer"], did)
+            self.assertTrue(event["expected_head_matched"])
+
     def test_recover_delivery_defaults_to_inspection_without_retry(self) -> None:
         args = build_parser().parse_args(["recover-delivery"])
         self.assertEqual(args.command, "recover-delivery")

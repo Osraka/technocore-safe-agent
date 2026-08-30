@@ -12,6 +12,7 @@ from typing import Any
 
 from technocore_safe_agent import __version__
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
+from technocore_safe_agent.audit import AuditError, SignedAuditLog
 from technocore_safe_agent.config import AgentConfig, ConfigError
 from technocore_safe_agent.crypto import (
     IdentityError,
@@ -132,6 +133,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_receipt.add_argument("path", type=Path, help="receipt JSON file")
 
+    audit = commands.add_parser("audit", help="inspect the signed local audit log")
+    audit_commands = audit.add_subparsers(dest="audit_command", required=True)
+    audit_verify = audit_commands.add_parser(
+        "verify", help="verify every audit signature and hash-chain link offline"
+    )
+    audit_verify.add_argument("path", type=Path, help="audit JSONL file")
+    audit_verify.add_argument(
+        "--expected-head",
+        help="optional trusted SHA-256 checkpoint that also detects tail rollback",
+    )
+
     run = commands.add_parser(
         "run", help="poll one room and apply the safe command policy"
     )
@@ -171,6 +183,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--lock",
         type=Path,
         help="live process lock; defaults beside the public identity",
+    )
+    run.add_argument(
+        "--audit-log",
+        type=Path,
+        help="signed decision log; defaults beside the public identity",
     )
     senders = run.add_mutually_exclusive_group()
     senders.add_argument(
@@ -351,6 +368,22 @@ def _verify_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _audit(args: argparse.Namespace) -> int:
+    if args.audit_command != "verify":
+        raise AuditError("unsupported audit command")
+    summary = SignedAuditLog(args.path).verify(expected_head=args.expected_head)
+    _print_event(
+        {
+            "status": "valid",
+            "entries": summary.entries,
+            "issuer": summary.issuer,
+            "head_sha256": summary.head_sha256,
+            "expected_head_matched": args.expected_head is not None,
+        }
+    )
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     record, private_key = _load_identity(args.identity)
     identity_path, config_path, default_state_path = _paths_beside_identity(args)
@@ -375,6 +408,43 @@ def _run_with_identity(
     config_path: Path,
     default_state_path: Path,
 ) -> int:
+    config = _load_active_config(record, config_path)
+    room, base_url = _resolve_runtime_target(args, config)
+    allowed = _validated_allowed_senders(args)
+    state_path = args.state.expanduser().resolve() if args.state else default_state_path
+    state = AgentState.load(state_path)
+    delivery_journal, audit_log = _live_artifacts(args, identity_path, record.did)
+    client = TechnocoreClient(base_url=base_url, timeout=args.timeout)
+    responder = SafeResponder(
+        room=room,
+        did=record.did,
+        private_key=private_key,
+        client=client,
+        policy=CommandPolicy(
+            own_did=record.did,
+            allowed_dids=allowed,
+            allow_any_signed=args.allow_any_signed,
+        ),
+        state=state,
+        state_path=state_path,
+        receipt_service=ContributionReceiptService(
+            issuer_did=record.did,
+            private_key=private_key,
+            client=GitHubPublicClient(timeout=args.github_timeout),
+        ),
+        delivery_journal=delivery_journal,
+        audit_log=audit_log,
+        send=args.send,
+    )
+
+    if _initialize_cursor(args, responder, state, room):
+        return 0
+    return _poll(args, responder, state, client, room)
+
+
+def _load_active_config(
+    record: IdentityRecord, config_path: Path
+) -> AgentConfig | None:
     config: AgentConfig | None = None
     if config_path.exists():
         config = AgentConfig.load(config_path)
@@ -386,6 +456,12 @@ def _run_with_identity(
             raise ConfigError(
                 "agent config is pending; inspect provisioning before running"
             )
+    return config
+
+
+def _resolve_runtime_target(
+    args: argparse.Namespace, config: AgentConfig | None
+) -> tuple[str, str]:
     if args.room:
         room = validate_room(args.room)
     elif config is not None:
@@ -397,46 +473,43 @@ def _run_with_identity(
     base_url = args.base_url or (
         config.base_url if config is not None else "https://technocore.chat"
     )
+    return room, base_url
+
+
+def _validated_allowed_senders(args: argparse.Namespace) -> frozenset[str]:
     allowed = frozenset(validate_did(did) for did in args.allow_did)
     if args.send and not allowed and not args.allow_any_signed:
         raise ProtocolValueError(
             "--send requires at least one --allow-did or the explicit --allow-any-signed flag"
         )
-    state_path = args.state.expanduser().resolve() if args.state else default_state_path
-    state = AgentState.load(state_path)
-    delivery_journal: DeliveryJournal | None = None
-    if args.send:
-        journal_path = _path_beside_identity(
-            args.journal, identity_path, "safe-agent-delivery.json"
-        )
-        delivery_journal = DeliveryJournal(journal_path)
-        delivery_journal.require_empty()
-    client = TechnocoreClient(base_url=base_url, timeout=args.timeout)
-    policy = CommandPolicy(
-        own_did=record.did,
-        allowed_dids=allowed,
-        allow_any_signed=args.allow_any_signed,
-    )
-    receipt_service = ContributionReceiptService(
-        issuer_did=record.did,
-        private_key=private_key,
-        client=GitHubPublicClient(timeout=args.github_timeout),
-    )
-    responder = SafeResponder(
-        room=room,
-        did=record.did,
-        private_key=private_key,
-        client=client,
-        policy=policy,
-        state=state,
-        state_path=state_path,
-        receipt_service=receipt_service,
-        delivery_journal=delivery_journal,
-        send=args.send,
-    )
+    return allowed
 
-    room_has_state = room in state.cursors
-    if not room_has_state:
+
+def _live_artifacts(
+    args: argparse.Namespace, identity_path: Path, did: str
+) -> tuple[DeliveryJournal | None, SignedAuditLog | None]:
+    if not args.send:
+        return None, None
+    journal = DeliveryJournal(
+        _path_beside_identity(args.journal, identity_path, "safe-agent-delivery.json")
+    )
+    journal.require_empty()
+    audit_path = _path_beside_identity(
+        args.audit_log, identity_path, "safe-agent-audit.jsonl"
+    )
+    audit = SignedAuditLog(audit_path)
+    if audit_path.exists() and audit.verify().issuer not in {None, did}:
+        raise AuditError("audit log belongs to a different agent DID")
+    return journal, audit
+
+
+def _initialize_cursor(
+    args: argparse.Namespace,
+    responder: SafeResponder,
+    state: AgentState,
+    room: str,
+) -> bool:
+    if room not in state.cursors:
         if args.start_at == "saved":
             raise StateError(
                 "no saved cursor exists for this room; choose --start-at latest or --start-at zero"
@@ -444,8 +517,17 @@ def _run_with_identity(
         if args.start_at == "latest":
             _print_event(responder.bootstrap_latest())
             if args.once:
-                return 0
+                return True
+    return False
 
+
+def _poll(
+    args: argparse.Namespace,
+    responder: SafeResponder,
+    state: AgentState,
+    client: TechnocoreClient,
+    room: str,
+) -> int:
     cache_buster = 1
     backoff = 1.0
     while True:
@@ -491,19 +573,17 @@ def _path_beside_identity(
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "doctor":
-            return _doctor(args)
-        if args.command == "provision":
-            return _provision(args)
-        if args.command == "recover":
-            return _recover(args)
-        if args.command == "recover-delivery":
-            return _recover_delivery(args)
-        if args.command == "receipt":
-            return _receipt(args)
-        if args.command == "verify-receipt":
-            return _verify_receipt(args)
-        return _run(args)
+        handler = {
+            "doctor": _doctor,
+            "provision": _provision,
+            "recover": _recover,
+            "recover-delivery": _recover_delivery,
+            "receipt": _receipt,
+            "verify-receipt": _verify_receipt,
+            "audit": _audit,
+            "run": _run,
+        }[args.command]
+        return handler(args)
     except KeyboardInterrupt:
         print("stopped", file=sys.stderr)
         return 130
@@ -511,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"write halted: {error}", file=sys.stderr)
         return 3
     except (
+        AuditError,
         ConfigError,
         DeliveryError,
         IdentityError,

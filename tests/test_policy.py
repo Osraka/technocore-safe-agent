@@ -11,6 +11,14 @@ PEER = "did:key:z6MkgYtEcT6LycB7YPDvGVYnCn66CbAH7BH3p88MZAyrSPwJ"
 
 
 class PolicyTests(unittest.TestCase):
+    def test_malformed_did_with_nonce_is_not_treated_as_authenticated(self) -> None:
+        policy = CommandPolicy(own_did=OWN, allow_any_signed=True)
+        decision = policy.decide(
+            RoomMessage(1, "did:key:z6Mk-not-a-valid-key", "/ping", "1")
+        )
+        self.assertEqual(decision.action, "ignore")
+        self.assertEqual(decision.reason, "unsigned_sender")
+
     def setUp(self) -> None:
         self.policy = CommandPolicy(own_did=OWN, allowed_dids=frozenset({PEER}))
 
