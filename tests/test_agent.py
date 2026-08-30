@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
+from technocore_safe_agent.delivery import DeliveryJournal
 from technocore_safe_agent.policy import CommandPolicy
 from technocore_safe_agent.protocol import RoomMessage, RoomSnapshot, TransportError
 from technocore_safe_agent.receipt import GitHubReceiptError
@@ -197,6 +198,66 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(receipts.calls, [url])
             self.assertEqual(client.posts, [])
             self.assertEqual(AgentState.load(root / "state.json").cursor_for("room"), 1)
+
+    def test_delivery_journal_is_cleared_only_after_ack_and_cursor_persist(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            responder.delivery_journal = DeliveryJournal(root / "delivery.json")
+
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),))
+            )
+
+            self.assertEqual(events[0]["event"], "sent")
+            self.assertFalse((root / "delivery.json").exists())
+            self.assertEqual(AgentState.load(root / "state.json").cursor_for("room"), 1)
+
+    def test_uncertain_write_leaves_pending_delivery_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(
+                root, send=True, client=FakeClient(fail_write=True)
+            )
+            journal = DeliveryJournal(root / "delivery.json")
+            responder.delivery_journal = journal
+
+            with self.assertRaises(UncertainWriteError):
+                responder.process_snapshot(
+                    RoomSnapshot("room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),))
+                )
+
+            pending = journal.load()
+            self.assertIsNotNone(pending)
+            self.assertEqual(pending.status, "pending")
+            self.assertEqual(pending.input_sequence, 1)
+            self.assertEqual(pending.text, "pong")
+            self.assertEqual(responder.state.cursor_for("room"), 0)
+
+    def test_state_save_failure_leaves_acknowledged_delivery_for_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(root, send=True, client=FakeClient())
+            journal = DeliveryJournal(root / "delivery.json")
+            responder.delivery_journal = journal
+
+            with patch.object(
+                responder.state, "save", side_effect=StateError("disk full")
+            ):
+                with self.assertRaisesRegex(UncertainWriteError, "acknowledged"):
+                    responder.process_snapshot(
+                        RoomSnapshot(
+                            "room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),)
+                        )
+                    )
+
+            acknowledged = journal.load()
+            self.assertIsNotNone(acknowledged)
+            self.assertEqual(acknowledged.status, "acknowledged")
+            self.assertEqual(acknowledged.reply_sequence, 10)
 
 
 if __name__ == "__main__":

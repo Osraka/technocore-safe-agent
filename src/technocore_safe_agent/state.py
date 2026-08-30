@@ -54,6 +54,12 @@ class AgentState:
         self.nonces[room] = selected
         return selected
 
+    def observe_nonce(self, room: str, nonce: int) -> None:
+        """Record a recovered nonce without ever moving its high-water mark back."""
+
+        _require_nonnegative_int(nonce, "observed nonce")
+        self.nonces[room] = max(self.nonces.get(room, 0), nonce)
+
     def save(self, path: Path) -> None:
         resolved = path.expanduser().resolve()
         resolved.parent.mkdir(parents=True, exist_ok=True)

@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,8 @@ from technocore_safe_agent.crypto import (
     validate_did,
     validate_room,
 )
+from technocore_safe_agent.delivery import DeliveryError, DeliveryJournal
+from technocore_safe_agent.delivery_recovery import recover_delivery
 from technocore_safe_agent.identity import (
     DEFAULT_IDENTITY_PATH,
     IdentityRecord,
@@ -25,6 +28,7 @@ from technocore_safe_agent.identity import (
     load_verified_private_key,
 )
 from technocore_safe_agent.policy import CommandPolicy
+from technocore_safe_agent.process_lock import AgentProcessLock, ProcessLockError
 from technocore_safe_agent.provision import provision_mailbox, recover_pending_mailbox
 from technocore_safe_agent.protocol import (
     ResponseError,
@@ -87,6 +91,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="retry once only after the room inspection found no matching write",
     )
 
+    recover_delivery_parser = commands.add_parser(
+        "recover-delivery",
+        help="inspect and explicitly resolve one in-flight signed reply",
+    )
+    _shared_identity_option(recover_delivery_parser)
+    recover_delivery_parser.add_argument(
+        "--room", help="room override; defaults to the active agent config"
+    )
+    recover_delivery_parser.add_argument(
+        "--config", type=Path, help="active agent config path"
+    )
+    recover_delivery_parser.add_argument("--state", type=Path)
+    recover_delivery_parser.add_argument("--journal", type=Path)
+    recover_delivery_parser.add_argument("--lock", type=Path)
+    recover_delivery_parser.add_argument(
+        "--base-url", help="server override; defaults to the active config"
+    )
+    recover_delivery_parser.add_argument("--timeout", type=float, default=20.0)
+    recover_delivery_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="persist a proven acknowledgement and clear the journal",
+    )
+    recover_delivery_parser.add_argument(
+        "--confirm-retry",
+        action="store_true",
+        help="resend the exact envelope once only after complete history proves absence",
+    )
+
     receipt = commands.add_parser(
         "receipt", help="issue a signed receipt for one public GitHub pull request"
     )
@@ -128,6 +161,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--state",
         type=Path,
         help="state path; defaults beside the public identity file",
+    )
+    run.add_argument(
+        "--journal",
+        type=Path,
+        help="in-flight delivery journal; defaults beside the public identity",
+    )
+    run.add_argument(
+        "--lock",
+        type=Path,
+        help="live process lock; defaults beside the public identity",
     )
     senders = run.add_mutually_exclusive_group()
     senders.add_argument(
@@ -228,6 +271,51 @@ def _recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _recover_delivery(args: argparse.Namespace) -> int:
+    identity_path, config_path, default_state_path = _paths_beside_identity(args)
+    record = IdentityRecord.load(identity_path)
+    config: AgentConfig | None = None
+    if config_path.exists():
+        config = AgentConfig.load(config_path)
+        if config.did != record.did or config.fingerprint != record.fingerprint:
+            raise ConfigError(
+                "agent config does not belong to the selected public identity"
+            )
+        if config.status != "active":
+            raise ConfigError("agent config must be active for delivery recovery")
+
+    if args.room:
+        room = validate_room(args.room)
+    elif config is not None:
+        room = config.room
+    else:
+        raise ConfigError(
+            "no active config exists; pass --room or select the provisioned config"
+        )
+    base_url = args.base_url or (
+        config.base_url if config is not None else "https://technocore.chat"
+    )
+    state_path = args.state.expanduser().resolve() if args.state else default_state_path
+    journal_path = _path_beside_identity(
+        args.journal, identity_path, "safe-agent-delivery.json"
+    )
+    lock_path = _path_beside_identity(args.lock, identity_path, "safe-agent.lock")
+    with AgentProcessLock(lock_path):
+        state = AgentState.load(state_path)
+        event = recover_delivery(
+            room=room,
+            did=record.did,
+            client=TechnocoreClient(base_url=base_url, timeout=args.timeout),
+            state=state,
+            state_path=state_path,
+            journal=DeliveryJournal(journal_path),
+            apply=args.apply,
+            confirm_retry=args.confirm_retry,
+        )
+    _print_event(event)
+    return 0
+
+
 def _receipt(args: argparse.Namespace) -> int:
     record, private_key = _load_identity(args.identity)
     service = ContributionReceiptService(
@@ -266,6 +354,27 @@ def _verify_receipt(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     record, private_key = _load_identity(args.identity)
     identity_path, config_path, default_state_path = _paths_beside_identity(args)
+    lock_path = _path_beside_identity(args.lock, identity_path, "safe-agent.lock")
+    lock = AgentProcessLock(lock_path) if args.send else nullcontext()
+    with lock:
+        return _run_with_identity(
+            args,
+            record,
+            private_key,
+            identity_path,
+            config_path,
+            default_state_path,
+        )
+
+
+def _run_with_identity(
+    args: argparse.Namespace,
+    record: IdentityRecord,
+    private_key: Any,
+    identity_path: Path,
+    config_path: Path,
+    default_state_path: Path,
+) -> int:
     config: AgentConfig | None = None
     if config_path.exists():
         config = AgentConfig.load(config_path)
@@ -295,6 +404,13 @@ def _run(args: argparse.Namespace) -> int:
         )
     state_path = args.state.expanduser().resolve() if args.state else default_state_path
     state = AgentState.load(state_path)
+    delivery_journal: DeliveryJournal | None = None
+    if args.send:
+        journal_path = _path_beside_identity(
+            args.journal, identity_path, "safe-agent-delivery.json"
+        )
+        delivery_journal = DeliveryJournal(journal_path)
+        delivery_journal.require_empty()
     client = TechnocoreClient(base_url=base_url, timeout=args.timeout)
     policy = CommandPolicy(
         own_did=record.did,
@@ -315,6 +431,7 @@ def _run(args: argparse.Namespace) -> int:
         state=state,
         state_path=state_path,
         receipt_service=receipt_service,
+        delivery_journal=delivery_journal,
         send=args.send,
     )
 
@@ -363,6 +480,14 @@ def _run(args: argparse.Namespace) -> int:
         cache_buster += 1
 
 
+def _path_beside_identity(
+    selected: Path | None, identity_path: Path, default_name: str
+) -> Path:
+    if selected is not None:
+        return selected.expanduser().resolve()
+    return identity_path.with_name(default_name)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -372,6 +497,8 @@ def main(argv: list[str] | None = None) -> int:
             return _provision(args)
         if args.command == "recover":
             return _recover(args)
+        if args.command == "recover-delivery":
+            return _recover_delivery(args)
         if args.command == "receipt":
             return _receipt(args)
         if args.command == "verify-receipt":
@@ -385,9 +512,11 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except (
         ConfigError,
+        DeliveryError,
         IdentityError,
         GitHubReceiptError,
         ProtocolValueError,
+        ProcessLockError,
         ResponseError,
         StateError,
         TransportError,

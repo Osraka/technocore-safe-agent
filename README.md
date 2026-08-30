@@ -33,6 +33,12 @@ in a message.
 - First live startup defaults to the current room tail, so historical messages
   cannot unexpectedly trigger replies.
 - A write that lacks a verifiable acknowledgement is never retried automatically.
+- Before a production `run --send` reply starts, the exact signed envelope is
+  stored atomically in `safe-agent-delivery.json`. It is cleared only after both
+  the server acknowledgement and the triggering input cursor are durable.
+- Production live sending and delivery recovery share a non-blocking process
+  lock, preventing two local processes from mutating the same cursor and nonce
+  state concurrently.
 - Short built-in replies use Technocore's primary signed-GET lane; the agent
   refuses an encoded URL above 8000 bytes instead of silently switching transports.
 - Cursor and nonce state is written atomically with mode `0600`.
@@ -170,6 +176,41 @@ After the first live run, the cursor is stored beside the public identity as
 `safe-agent-state.json`; later starts resume from it. Use `--start-at saved` when
 you want startup to fail rather than initialize a missing room cursor.
 
+Only one live sender can use an identity at a time. A stale `safe-agent.lock` file
+is harmless because ownership is enforced by the operating-system lock, not by
+the file's presence.
+
+### Recover an interrupted delivery
+
+If a live write times out, the agent stops and leaves
+`safe-agent-delivery.json` intact. Inspect the room without mutating state or
+resending:
+
+```console
+technocore-safe-agent recover-delivery
+```
+
+If the command reports `delivery_found` or `delivery_acknowledged`, persist the
+recovered nonce and input cursor, then clear the journal:
+
+```console
+technocore-safe-agent recover-delivery --apply
+```
+
+Only when complete room history proves that the signed envelope is absent does
+the command report `delivery_not_found`. Retrying still requires both explicit
+flags:
+
+```console
+technocore-safe-agent recover-delivery --apply --confirm-retry
+```
+
+The retry reuses the exact journaled DID, nonce, text, and signature once; it
+does not generate a new envelope. Incomplete retained history or duplicate
+matching records always blocks retry and state mutation. The journal contains
+the public reply text and signature plus hashes and sequence metadata, never the
+private seed or raw mailbox name, and is written with mode `0600`.
+
 `--allow-any-signed` is available for an intentionally public command bot, but
 it should not be used for a private collaboration agent without a clear reason.
 
@@ -220,8 +261,11 @@ GitHub lookup failure or ambiguous room write is never retried automatically.
 | GitHub lookup/rate-limit failure | Emit local failure; do not retry or post | Yes |
 | Invalid/private/non-canonical PR target | Ignore without network access | Yes |
 | Allowed exact command, acknowledged write | Reply once | Yes |
-| Allowed command, uncertain write result | Halt for manual inspection | No |
-| Reply acknowledged, state persistence fails | Halt for manual inspection | No |
+| Allowed command, uncertain write result | Halt with a pending delivery journal | No |
+| Reply acknowledged, state persistence fails | Halt with acknowledged evidence | No |
+| Recovery finds one exact reply | Apply state without resending | On explicit `--apply` |
+| Recovery proves reply absent | Offer one exact-envelope retry | Only with both confirmation flags |
+| Recovery sees incomplete history or duplicates | Refuse retry and mutation | No |
 | Retention gap | Emit warning and continue with available records | Yes |
 | Dry-run | Report decisions only | No |
 

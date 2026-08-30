@@ -10,6 +10,11 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from technocore_safe_agent.crypto import sign_room_message
+from technocore_safe_agent.delivery import (
+    DeliveryError,
+    DeliveryJournal,
+    DeliveryRecord,
+)
 from technocore_safe_agent.policy import CommandPolicy
 from technocore_safe_agent.protocol import (
     ResponseError,
@@ -39,6 +44,7 @@ class SafeResponder:
     state: AgentState
     state_path: Path
     receipt_service: ReceiptIssuer | None = None
+    delivery_journal: DeliveryJournal | None = None
     send: bool = False
 
     def bootstrap_latest(self) -> dict[str, Any]:
@@ -107,27 +113,31 @@ class SafeResponder:
             "reason": decision.reason,
         }
         if decision.action == "reply" and decision.reply is not None:
-            return self._reply_event(event, message.text, decision.reply)
+            return self._reply_event(event, message.seq, message.text, decision.reply)
         if decision.action == "receipt" and decision.target is not None:
-            return self._receipt_event(event, decision.target)
+            return self._receipt_event(event, message.seq, decision.target)
         return event
 
     def _reply_event(
-        self, event: dict[str, Any], command: str, reply: str
+        self,
+        event: dict[str, Any],
+        input_sequence: int,
+        command: str,
+        reply: str,
     ) -> dict[str, Any]:
         if not self.send:
             event.update(
                 {"event": "would_reply", "reply_command": command, "reply": reply}
             )
             return event
-        posted = self._send_text(reply)
+        posted = self._send_text(reply, input_sequence)
         event.update(
             {"event": "sent", "reply_seq": posted.seq, "reply_command": command}
         )
         return event
 
     def _receipt_event(
-        self, event: dict[str, Any], pull_request: str
+        self, event: dict[str, Any], input_sequence: int, pull_request: str
     ) -> dict[str, Any]:
         if not self.send:
             event.update(
@@ -155,7 +165,7 @@ class SafeResponder:
                 }
             )
             return event
-        posted = self._send_text(receipt)
+        posted = self._send_text(receipt, input_sequence)
         event.update(
             {
                 "event": "sent_receipt",
@@ -179,7 +189,18 @@ class SafeResponder:
                 ) from error
             raise
 
-    def _send_text(self, text: str) -> RoomMessage:
+        if event_name in {"sent", "sent_receipt"} and self.delivery_journal:
+            try:
+                self.delivery_journal.clear()
+            except DeliveryError as error:
+                raise UncertainWriteError(
+                    "reply and cursor were persisted but the delivery journal could not "
+                    "be cleared; run recover-delivery before restarting"
+                ) from error
+
+    def _send_text(self, text: str, input_sequence: int) -> RoomMessage:
+        if self.delivery_journal is not None:
+            self.delivery_journal.require_empty()
         nonce = self.state.next_nonce(self.room, time.time_ns())
         swept, signature = sign_room_message(
             self.private_key,
@@ -187,8 +208,19 @@ class SafeResponder:
             nonce,
             text,
         )
+        if self.delivery_journal is not None:
+            self.delivery_journal.prepare(
+                DeliveryRecord.create(
+                    room=self.room,
+                    input_sequence=input_sequence,
+                    did=self.did,
+                    nonce=nonce,
+                    text=swept,
+                    signature=signature,
+                )
+            )
         try:
-            return self.client.send_signed_message(
+            posted = self.client.send_signed_message(
                 room=self.room,
                 did=self.did,
                 signature=signature,
@@ -200,3 +232,12 @@ class SafeResponder:
                 "signed write did not return a verifiable acknowledgement; "
                 "inspect the room before restarting so the command is not answered twice"
             ) from error
+        if self.delivery_journal is not None:
+            try:
+                self.delivery_journal.acknowledge(posted.seq)
+            except DeliveryError as error:
+                raise UncertainWriteError(
+                    "reply was acknowledged but its delivery evidence could not be "
+                    "persisted; run recover-delivery before restarting"
+                ) from error
+        return posted

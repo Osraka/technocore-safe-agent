@@ -26,6 +26,13 @@ class StateTests(unittest.TestCase):
             self.assertEqual(loaded.nonces["room"], 101)
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_observes_recovered_nonce_without_regressing(self) -> None:
+        state = AgentState(nonces={"room": 100})
+        state.observe_nonce("room", 90)
+        self.assertEqual(state.nonces["room"], 100)
+        state.observe_nonce("room", 101)
+        self.assertEqual(state.nonces["room"], 101)
+
     def test_refuses_cursor_regression_and_corrupt_state(self) -> None:
         state = AgentState(cursors={"room": 8})
         with self.assertRaisesRegex(StateError, "backwards"):

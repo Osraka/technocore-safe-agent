@@ -8,8 +8,12 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
 
-from technocore_safe_agent.cli import main
-from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
+from technocore_safe_agent.cli import build_parser, main
+from technocore_safe_agent.crypto import (
+    did_from_private_key,
+    fingerprint_of_did,
+    private_key_from_seed,
+)
 from technocore_safe_agent.receipt import (
     PullRequestEvidence,
     build_signed_receipt,
@@ -50,6 +54,56 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_recover_delivery_defaults_to_inspection_without_retry(self) -> None:
+        args = build_parser().parse_args(["recover-delivery"])
+        self.assertEqual(args.command, "recover-delivery")
+        self.assertFalse(args.apply)
+        self.assertFalse(args.confirm_retry)
+
+    def test_recover_delivery_without_journal_does_not_access_keychain_or_network(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            did = did_from_private_key(private_key_from_seed(SEED))
+            identity = root / "identity.json"
+            identity.write_text(
+                json.dumps(
+                    {
+                        "did": did,
+                        "fingerprint": fingerprint_of_did(did),
+                        "custody": {
+                            "backend": "macos-keychain",
+                            "service": "must-not-be-read",
+                            "account": "must-not-be-read",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = main(
+                    [
+                        "recover-delivery",
+                        "--identity",
+                        str(identity),
+                        "--room",
+                        "test-room",
+                        "--state",
+                        str(root / "state.json"),
+                        "--journal",
+                        str(root / "delivery.json"),
+                        "--lock",
+                        str(root / "agent.lock"),
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                json.loads(stdout.getvalue())["event"], "no_pending_delivery"
+            )
+
     def test_verify_receipt_does_not_require_keychain_access(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.json"
