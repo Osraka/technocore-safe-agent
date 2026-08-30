@@ -19,6 +19,19 @@ from technocore_safe_agent.capabilities import (
     CapabilityRateLimiter,
 )
 from technocore_safe_agent.config import AgentConfig, ConfigError
+from technocore_safe_agent.controller import (
+    CONTROLLER_COMMANDS,
+    DEFAULT_CONTROLLER_ACCOUNT,
+    DEFAULT_CONTROLLER_IDENTITY_PATH,
+    DEFAULT_CONTROLLER_SERVICE,
+    CONTROLLER_RATE_LIMIT,
+    ControllerError,
+    MacOSKeychainSeedWriter,
+    create_controller_identity,
+    grant_controller_to_empty_policy,
+    load_controller_identity,
+    send_controller_command,
+)
 from technocore_safe_agent.crypto import (
     IdentityError,
     ProtocolValueError,
@@ -65,6 +78,15 @@ def _shared_identity_option(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _controller_identity_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--identity",
+        type=Path,
+        default=DEFAULT_CONTROLLER_IDENTITY_PATH,
+        help="public controller identity; private key remains in macOS Keychain",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="technocore-safe-agent",
@@ -102,6 +124,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="return unhealthy unless the live process lock is held",
     )
+
+    controller = commands.add_parser(
+        "controller", help="manage one least-privilege Keychain-backed controller"
+    )
+    controller_commands = controller.add_subparsers(
+        dest="controller_command", required=True
+    )
+    controller_create = controller_commands.add_parser(
+        "create", help="create a separate controller DID in macOS Keychain"
+    )
+    _controller_identity_option(controller_create)
+    controller_create.add_argument("--service", default=DEFAULT_CONTROLLER_SERVICE)
+    controller_create.add_argument("--account", default=DEFAULT_CONTROLLER_ACCOUNT)
+
+    controller_grant = controller_commands.add_parser(
+        "grant",
+        help="replace an empty capability policy with the fixed controller grant",
+    )
+    _controller_identity_option(controller_grant)
+    controller_grant.add_argument("--capability-policy", type=Path, required=True)
+
+    controller_send = controller_commands.add_parser(
+        "send", help="send one exact idempotent controller command"
+    )
+    _controller_identity_option(controller_send)
+    controller_send.add_argument("controller_text", choices=CONTROLLER_COMMANDS)
+    controller_send.add_argument("--config", type=Path, help="active agent config")
+    controller_send.add_argument("--state", type=Path, help="controller nonce state")
+    controller_send.add_argument("--lock", type=Path, help="controller process lock")
+    controller_send.add_argument("--timeout", type=float, default=20.0)
 
     launchd = commands.add_parser(
         "launchd", help="render a conservative macOS LaunchAgent without installing it"
@@ -346,6 +398,62 @@ def _health_path(selected: Path | None, identity_path: Path, default_name: str) 
     if selected is not None:
         return selected.expanduser().absolute()
     return identity_path.with_name(default_name)
+
+
+def _controller(args: argparse.Namespace) -> int:
+    identity_path = args.identity.expanduser().absolute()
+    if args.controller_command == "create":
+        record = create_controller_identity(
+            identity_path,
+            MacOSKeychainSeedWriter(args.service, args.account),
+        )
+        _print_event(
+            {
+                "status": "created",
+                "did": record.did,
+                "fingerprint": record.fingerprint,
+                "private_key_exported": False,
+            }
+        )
+        return 0
+    if args.controller_command == "grant":
+        grant_controller_to_empty_policy(
+            identity_path,
+            args.capability_policy.expanduser().absolute(),
+        )
+        _print_event(
+            {
+                "status": "granted",
+                "commands": list(CONTROLLER_COMMANDS),
+                "max_requests_per_hour": CONTROLLER_RATE_LIMIT,
+                "pr_enabled": False,
+            }
+        )
+        return 0
+    if args.controller_command != "send":
+        raise ControllerError("unsupported controller command")
+
+    record = load_controller_identity(identity_path)
+    provider = MacOSKeychainSeedProvider(
+        record.keychain_service,
+        record.keychain_account,
+    )
+    private_key = load_verified_private_key(record, provider)
+    config_path = _health_path(args.config, identity_path, "safe-agent-config.json")
+    state_path = _health_path(args.state, identity_path, "controller-state.json")
+    lock_path = _health_path(args.lock, identity_path, "controller.lock")
+    config = AgentConfig.load(config_path)
+    with AgentProcessLock(lock_path):
+        event = send_controller_command(
+            did=record.did,
+            private_key=private_key,
+            config=config,
+            state_path=state_path,
+            command=args.controller_text,
+            client=TechnocoreClient(base_url=config.base_url, timeout=args.timeout),
+        )
+    _print_event(event)
+    return 0
 
 
 def _launchd(args: argparse.Namespace) -> int:
@@ -735,6 +843,7 @@ def main(argv: list[str] | None = None) -> int:
         handler = {
             "doctor": _doctor,
             "health": _health,
+            "controller": _controller,
             "launchd": _launchd,
             "provision": _provision,
             "recover": _recover,
@@ -755,6 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         AuditError,
         CapabilityError,
         ConfigError,
+        ControllerError,
         DeliveryError,
         IdentityError,
         LaunchAgentError,

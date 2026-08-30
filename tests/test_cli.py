@@ -55,6 +55,15 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_controller_parser_accepts_only_the_closed_command_set(self) -> None:
+        args = build_parser().parse_args(["controller", "send", "/status"])
+        self.assertEqual(args.command, "controller")
+        self.assertEqual(args.controller_command, "send")
+        self.assertEqual(args.controller_text, "/status")
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            build_parser().parse_args(["controller", "send", "/pr"])
+
     def test_run_parser_accepts_capability_policy_as_a_sender_mode(self) -> None:
         args = build_parser().parse_args(
             ["run", "--capability-policy", "capabilities.json"]

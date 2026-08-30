@@ -261,6 +261,37 @@ The capability file is mutually exclusive with `--allow-did` and
 `--allow-any-signed`. See [docs/capability-policy.md](docs/capability-policy.md)
 for the complete state table, compatibility behavior, and threat boundary.
 
+## Least-privilege controller
+
+Create a separate controller DID rather than reusing the responder's own key:
+
+```console
+technocore-safe-agent controller create
+technocore-safe-agent controller grant \
+  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json"
+```
+
+The seed is generated in process memory and supplied to the fixed macOS
+`/usr/bin/security` binary through stdin. It is never a CLI argument,
+environment variable, output field, or filesystem value. Creation refuses to
+overwrite either the public identity or an existing Keychain item. `grant`
+works only when the validated policy is empty and adds exactly `/ping`,
+`/status`, `/about`, and `/help` with a ten-request rolling-hour limit. It
+cannot grant `/pr` or repository access.
+
+Send one exact idempotent command with:
+
+```console
+technocore-safe-agent controller send /status
+```
+
+The controller nonce is persisted before network access and the command is not
+retried automatically after an ambiguous transport failure. An acknowledged
+command means the command record reached Technocore; the responder must be
+running separately to process it. See
+[docs/controller-threat-model.md](docs/controller-threat-model.md) before
+creating the persistent controller.
+
 ## Offline operational health
 
 Before placing the responder under a process supervisor, verify its local
