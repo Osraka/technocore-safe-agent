@@ -192,6 +192,20 @@ The pilot never publishes a DID profile or persists either ephemeral peer key.
 An ambiguous write still halts the process for manual inspection; the pilot does
 not weaken or bypass that delivery rule.
 
+For a single end-to-end receipt check, use the narrower PR pilot. It creates one
+ephemeral allowlisted DID in memory, writes one canonical `/pr` command, and
+requires exactly one attributable, portable receipt response:
+
+```console
+PYTHONPATH=src python3 scripts/run_live_receipt_pilot.py \
+  --pull-request https://github.com/OWNER/REPO/pull/NUMBER \
+  --execute-live-receipt-pilot
+```
+
+The PR pilot verifies both acknowledged room-message signatures before
+transport and the receipt's inner portable signature after reading it back. A
+GitHub lookup failure or ambiguous room write is never retried automatically.
+
 ## Processing table
 
 | Input/state | Result | Cursor persisted in live mode? |
