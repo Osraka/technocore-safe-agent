@@ -14,8 +14,12 @@ dependencies = [
   "cryptography>=42,<51",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
+
 [project.scripts]
 technocore-safe-agent = "technocore_safe_agent.cli:main"
+technocore-safe-agent-mcp = "technocore_safe_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

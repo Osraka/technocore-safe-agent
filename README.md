@@ -43,6 +43,9 @@ in a message.
 - Each message processed by production `run --send` creates a DID-signed,
   hash-chained audit record containing only bounded decision metadata. Raw room
   names, message text, PR URLs, and peer DIDs are excluded.
+- The optional MCP entry point is stdio-only and read-only. It can verify a
+  bounded receipt supplied as data, and exposes an audit summary only when the
+  operator fixes one audit path at process startup.
 - Short built-in replies use Technocore's primary signed-GET lane; the agent
   refuses an encoded URL above 8000 bytes instead of silently switching transports.
 - Cursor and nonce state is written atomically with mode `0600`.
@@ -287,6 +290,55 @@ by truncating the tail still verifies. This is a signed local integrity log, not
 an externally anchored transparency service. See
 [docs/audit-threat-model.md](docs/audit-threat-model.md) for its exact boundary.
 
+## Optional read-only MCP verifier
+
+Install the optional stable MCP SDK separately from the base agent:
+
+```console
+python -m pip install -e '.[mcp]'
+```
+
+Start the verifier over stdio:
+
+```console
+technocore-safe-agent-mcp
+```
+
+The default server publishes one tool, `verify_contribution_receipt`. It accepts
+at most 4096 bytes of signed receipt JSON and returns only validation status,
+the receipt schema, issuer DID, repository, PR number, and payload digest. It
+does not refresh GitHub state or echo the receipt's author or raw content.
+
+An operator can additionally expose integrity checks for one fixed audit log:
+
+```console
+technocore-safe-agent-mcp \
+  --audit-log /absolute/path/to/safe-agent-audit.jsonl
+```
+
+This adds `inspect_audit_integrity`. The tool schema has no filesystem-path
+argument: the model cannot select another file. Without `--audit-log`, the tool
+is absent rather than present in a disabled state.
+
+Configure an MCP host with the absolute path to the virtual environment's
+entry point. The exact configuration key varies by host; its command and
+arguments are equivalent to:
+
+```json
+{
+  "command": "/absolute/path/to/.venv/bin/technocore-safe-agent-mcp",
+  "args": ["--audit-log", "/absolute/path/to/safe-agent-audit.jsonl"]
+}
+```
+
+Both tools are annotated read-only, non-destructive, idempotent, and
+closed-world. These annotations are descriptive hints for MCP clients, not a
+security boundary. The implementation enforces the boundary by exposing no
+network transport option, Keychain access, Technocore operation, write path, or
+model-selected filesystem path. See
+[docs/mcp-threat-model.md](docs/mcp-threat-model.md) before enabling it in a
+host that can see private prompts or files.
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
@@ -365,6 +417,7 @@ python -m compileall -q src tests
 - Treating a local capability policy as protection against compromise of the
   same operating-system account
 - Treating a `did:key` as proof of a real-world identity or trustworthiness
+- Treating MCP tool annotations as an authorization mechanism
 - Storing or publishing the private seed
 
 ## License
