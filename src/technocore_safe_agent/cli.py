@@ -26,7 +26,7 @@ from technocore_safe_agent.controller import (
     DEFAULT_CONTROLLER_SERVICE,
     CONTROLLER_RATE_LIMIT,
     ControllerError,
-    MacOSKeychainSeedWriter,
+    MacOSKeychainSeedStore,
     create_controller_identity,
     grant_controller_to_empty_policy,
     load_controller_identity,
@@ -405,7 +405,7 @@ def _controller(args: argparse.Namespace) -> int:
     if args.controller_command == "create":
         record = create_controller_identity(
             identity_path,
-            MacOSKeychainSeedWriter(args.service, args.account),
+            MacOSKeychainSeedStore(args.service, args.account),
         )
         _print_event(
             {
@@ -434,7 +434,7 @@ def _controller(args: argparse.Namespace) -> int:
         raise ControllerError("unsupported controller command")
 
     record = load_controller_identity(identity_path)
-    provider = MacOSKeychainSeedProvider(
+    provider = MacOSKeychainSeedStore(
         record.keychain_service,
         record.keychain_account,
     )

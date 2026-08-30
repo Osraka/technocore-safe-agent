@@ -29,13 +29,14 @@ The command requires its existing parent directory to be a real, owner-only
 directory. The public JSON is created exclusively with mode `0600` and contains
 only the DID, fingerprint, creation time, and Keychain selectors.
 
-The 32-byte seed is generated in process memory. The fixed absolute
-`/usr/bin/security` command receives it through stdin with `-w` as its final
-option, following the tool's prompt mode. The seed is not placed in process
-arguments, an environment variable, a temporary file, public JSON, or command
-output. The implementation cannot guarantee erasure of immutable Python memory
-after use and does not claim protection from compromise of the same operating-
-system account.
+The 32-byte seed is generated in process memory and passed directly to the
+macOS Security.framework generic-password API. The mutable API input buffer is
+cleared after the call, and buffers returned while reading are released with
+`SecKeychainItemFreeContent`. The seed is not placed in process arguments, an
+environment variable, a temporary file, public JSON, or command output. The
+implementation cannot guarantee erasure of immutable Python memory after use
+and does not claim protection from compromise of the same operating-system
+account.
 
 Creation has no update mode. Existing public identities and Keychain items are
 not replaced. If public-file creation fails after a new Keychain item was added,

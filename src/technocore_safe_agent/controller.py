@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import secrets
 import stat
-import subprocess
 import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import Any, Protocol
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -40,6 +40,13 @@ DEFAULT_CONTROLLER_SERVICE = "technocore.osraka.controller"
 DEFAULT_CONTROLLER_ACCOUNT = "Osraka-controller"
 CONTROLLER_COMMANDS = ("/ping", "/status", "/about", "/help")
 CONTROLLER_RATE_LIMIT = 10
+SECURITY_FRAMEWORK_PATH = "/System/Library/Frameworks/Security.framework/Security"
+COREFOUNDATION_FRAMEWORK_PATH = (
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+)
+ERR_SEC_SUCCESS = 0
+ERR_SEC_ITEM_NOT_FOUND = -25300
+MAX_KEYCHAIN_SECRET_BYTES = 4_096
 
 
 class ControllerError(RuntimeError):
@@ -65,10 +72,9 @@ class ControllerClient(Protocol):
 
 
 @dataclass(frozen=True)
-class MacOSKeychainSeedWriter:
+class MacOSKeychainSeedStore:
     service: str
     account: str
-    security_binary: ClassVar[str] = "/usr/bin/security"
 
     def __post_init__(self) -> None:
         _validate_keychain_selector(self.service, "service")
@@ -76,57 +82,13 @@ class MacOSKeychainSeedWriter:
 
     def store_seed(self, seed: str) -> None:
         private_key_from_seed(seed)
-        arguments = [
-            self.security_binary,
-            "add-generic-password",
-            "-a",
-            self.account,
-            "-s",
-            self.service,
-            "-l",
-            "Technocore Safe Agent Controller",
-            "-w",
-        ]
-        try:
-            # Fixed absolute binary, no shell; the seed is supplied only on stdin.
-            subprocess.run(  # noqa: S603
-                arguments,
-                input=f"{seed}\n",
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except FileNotFoundError as error:
-            raise ControllerError("macOS security command is not available") from error
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-            raise ControllerError(
-                "cannot create the controller Keychain item"
-            ) from error
+        _add_generic_password(self.service, self.account, seed)
+
+    def load_seed(self) -> str:
+        return _read_generic_password(self.service, self.account)
 
     def delete_seed(self) -> None:
-        try:
-            # Fixed absolute binary, no shell, and only exact item selectors.
-            subprocess.run(  # noqa: S603
-                [
-                    self.security_binary,
-                    "delete-generic-password",
-                    "-a",
-                    self.account,
-                    "-s",
-                    self.service,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (
-            FileNotFoundError,
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
-        ):
-            return
+        _delete_generic_password(self.service, self.account)
 
 
 def create_controller_identity(
@@ -170,7 +132,12 @@ def create_controller_identity(
             raise ControllerError("created controller identity failed verification")
     except Exception:
         _unlink_if_present(resolved)
-        seed_store.delete_seed()
+        try:
+            seed_store.delete_seed()
+        except Exception as cleanup_error:
+            raise ControllerError(
+                "controller creation failed and Keychain cleanup also failed"
+            ) from cleanup_error
         raise
     return record
 
@@ -265,6 +232,141 @@ def _validate_keychain_selector(value: str, label: str) -> None:
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise ControllerError(f"controller Keychain {label} is invalid")
+
+
+def _load_security_framework() -> Any:
+    try:
+        library = ctypes.CDLL(SECURITY_FRAMEWORK_PATH)
+    except OSError as error:
+        raise ControllerError("macOS Security.framework is not available") from error
+
+    library.SecKeychainAddGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.SecKeychainAddGenericPassword.restype = ctypes.c_int32
+    library.SecKeychainFindGenericPassword.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    library.SecKeychainFindGenericPassword.restype = ctypes.c_int32
+    library.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    library.SecKeychainItemFreeContent.restype = ctypes.c_int32
+    library.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
+    library.SecKeychainItemDelete.restype = ctypes.c_int32
+    return library
+
+
+def _load_corefoundation_framework() -> Any:
+    try:
+        library = ctypes.CDLL(COREFOUNDATION_FRAMEWORK_PATH)
+    except OSError as error:
+        raise ControllerError("macOS CoreFoundation is not available") from error
+    library.CFRelease.argtypes = [ctypes.c_void_p]
+    library.CFRelease.restype = None
+    return library
+
+
+def _add_generic_password(service: str, account: str, secret: str) -> None:
+    library = _load_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    secret_bytes = bytearray(secret, "ascii")
+    secret_buffer = (ctypes.c_ubyte * len(secret_bytes)).from_buffer(secret_bytes)
+    try:
+        status = library.SecKeychainAddGenericPassword(
+            None,
+            len(service_bytes),
+            service_bytes,
+            len(account_bytes),
+            account_bytes,
+            len(secret_bytes),
+            ctypes.cast(secret_buffer, ctypes.c_void_p),
+            None,
+        )
+    finally:
+        ctypes.memset(ctypes.addressof(secret_buffer), 0, len(secret_bytes))
+    if status != ERR_SEC_SUCCESS:
+        raise ControllerError("cannot create the controller Keychain item")
+
+
+def _read_generic_password(service: str, account: str) -> str:
+    library = _load_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    password_length = ctypes.c_uint32()
+    password_data = ctypes.c_void_p()
+    status = library.SecKeychainFindGenericPassword(
+        None,
+        len(service_bytes),
+        service_bytes,
+        len(account_bytes),
+        account_bytes,
+        ctypes.byref(password_length),
+        ctypes.byref(password_data),
+        None,
+    )
+    if status != ERR_SEC_SUCCESS:
+        raise ControllerError("cannot read the controller Keychain item")
+
+    invalid_buffer = password_length.value > MAX_KEYCHAIN_SECRET_BYTES or (
+        password_length.value > 0 and password_data.value is None
+    )
+    try:
+        raw = (
+            b""
+            if invalid_buffer or password_data.value is None
+            else ctypes.string_at(password_data.value, password_length.value)
+        )
+    finally:
+        if password_data.value is not None:
+            free_status = library.SecKeychainItemFreeContent(None, password_data)
+            if free_status != ERR_SEC_SUCCESS:
+                raise ControllerError("cannot release controller Keychain memory")
+    if invalid_buffer:
+        raise ControllerError("controller Keychain item has an invalid size")
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ControllerError("controller Keychain item is not ASCII") from error
+
+
+def _delete_generic_password(service: str, account: str) -> None:
+    library = _load_security_framework()
+    service_bytes = service.encode("utf-8")
+    account_bytes = account.encode("utf-8")
+    item_ref = ctypes.c_void_p()
+    status = library.SecKeychainFindGenericPassword(
+        None,
+        len(service_bytes),
+        service_bytes,
+        len(account_bytes),
+        account_bytes,
+        None,
+        None,
+        ctypes.byref(item_ref),
+    )
+    if status == ERR_SEC_ITEM_NOT_FOUND:
+        return
+    if status != ERR_SEC_SUCCESS or item_ref.value is None:
+        raise ControllerError("cannot locate the controller Keychain item")
+    try:
+        if library.SecKeychainItemDelete(item_ref) != ERR_SEC_SUCCESS:
+            raise ControllerError("cannot delete the controller Keychain item")
+    finally:
+        _load_corefoundation_framework().CFRelease(item_ref)
 
 
 def _path_exists(path: Path) -> bool:
