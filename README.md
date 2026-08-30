@@ -295,6 +295,32 @@ separately to verify Keychain custody. See
 [docs/operational-health.md](docs/operational-health.md) for the full state
 table and supervisor boundary.
 
+## Conservative LaunchAgent rendering
+
+On macOS, render a reviewed LaunchAgent definition only after the offline health
+preflight succeeds:
+
+```console
+technocore-safe-agent launchd render \
+  --identity "$HOME/Library/Application Support/Technocore/Osraka/public-identity.json" \
+  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json" \
+  --executable /absolute/path/to/.venv/bin/technocore-safe-agent
+```
+
+The command prints an XML plist to stdout. It does not create a file, install a
+LaunchAgent, call `launchctl`, read Keychain, or contact the network. The
+renderer requires an owner-controlled executable and private log directory,
+rejects log destinations that could overwrite runtime artifacts, and emits
+direct arguments rather than a shell command or environment variables.
+
+The generated job starts from the saved cursor and uses the strict capability
+policy. `KeepAlive.Crashed` restarts a signal-crashed process, but deliberate
+fail-closed exits such as `unhealthy` (2) and `recovery_required` (3) remain
+stopped for operator review instead of entering a restart loop. Validate and
+inspect the XML before any manual `launchctl bootstrap` decision. See
+[docs/launchd.md](docs/launchd.md) for the state table, safe staging sequence,
+and unload/recovery boundary.
+
 ## Signed local audit log
 
 Production `run --send` writes `safe-agent-audit.jsonl` beside the public

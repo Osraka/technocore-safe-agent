@@ -34,6 +34,11 @@ from technocore_safe_agent.identity import (
     MacOSKeychainSeedProvider,
     load_verified_private_key,
 )
+from technocore_safe_agent.launchd import (
+    LaunchAgentError,
+    LaunchAgentSpec,
+    render_launch_agent,
+)
 from technocore_safe_agent.policy import CommandPolicy
 from technocore_safe_agent.process_lock import AgentProcessLock, ProcessLockError
 from technocore_safe_agent.provision import provision_mailbox, recover_pending_mailbox
@@ -96,6 +101,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--expect-running",
         action="store_true",
         help="return unhealthy unless the live process lock is held",
+    )
+
+    launchd = commands.add_parser(
+        "launchd", help="render a conservative macOS LaunchAgent without installing it"
+    )
+    launchd_commands = launchd.add_subparsers(dest="launchd_command", required=True)
+    launchd_render = launchd_commands.add_parser(
+        "render", help="print a validated LaunchAgent plist to stdout"
+    )
+    _shared_identity_option(launchd_render)
+    launchd_render.add_argument("--config", type=Path, help="active agent config path")
+    launchd_render.add_argument("--state", type=Path, help="persistent state path")
+    launchd_render.add_argument(
+        "--capability-policy",
+        type=Path,
+        required=True,
+        help="mode-0600 capability policy used by the managed agent",
+    )
+    launchd_render.add_argument("--journal", type=Path, help="delivery journal path")
+    launchd_render.add_argument("--lock", type=Path, help="live process lock path")
+    launchd_render.add_argument("--audit-log", type=Path, help="signed audit log path")
+    launchd_render.add_argument(
+        "--expected-audit-head",
+        help="optional trusted SHA-256 audit checkpoint for preflight",
+    )
+    launchd_render.add_argument(
+        "--label", default="com.technocore.safe-agent", help="LaunchAgent label"
+    )
+    launchd_render.add_argument(
+        "--executable",
+        type=Path,
+        required=True,
+        help="absolute technocore-safe-agent entry point",
+    )
+    launchd_render.add_argument(
+        "--stdout-path", type=Path, help="private stdout log path"
+    )
+    launchd_render.add_argument(
+        "--stderr-path", type=Path, help="private stderr log path"
     )
 
     provision = commands.add_parser(
@@ -302,6 +346,37 @@ def _health_path(selected: Path | None, identity_path: Path, default_name: str) 
     if selected is not None:
         return selected.expanduser().absolute()
     return identity_path.with_name(default_name)
+
+
+def _launchd(args: argparse.Namespace) -> int:
+    if args.launchd_command != "render":
+        raise LaunchAgentError("unsupported launchd command")
+    identity_path = args.identity.expanduser().absolute()
+    health_paths = HealthPaths(
+        identity=identity_path,
+        config=_health_path(args.config, identity_path, "safe-agent-config.json"),
+        state=_health_path(args.state, identity_path, "safe-agent-state.json"),
+        capability_policy=args.capability_policy.expanduser().absolute(),
+        journal=_health_path(args.journal, identity_path, "safe-agent-delivery.json"),
+        audit=_health_path(args.audit_log, identity_path, "safe-agent-audit.jsonl"),
+        lock=_health_path(args.lock, identity_path, "safe-agent.lock"),
+    )
+    rendered = render_launch_agent(
+        LaunchAgentSpec(
+            label=args.label,
+            executable=args.executable.expanduser().absolute(),
+            health_paths=health_paths,
+            stdout_path=_health_path(
+                args.stdout_path, identity_path, "safe-agent.stdout.log"
+            ),
+            stderr_path=_health_path(
+                args.stderr_path, identity_path, "safe-agent.stderr.log"
+            ),
+            expected_audit_head=args.expected_audit_head,
+        )
+    )
+    print(rendered, end="", flush=True)
+    return 0
 
 
 def _paths_beside_identity(args: argparse.Namespace) -> tuple[Path, Path, Path]:
@@ -660,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
         handler = {
             "doctor": _doctor,
             "health": _health,
+            "launchd": _launchd,
             "provision": _provision,
             "recover": _recover,
             "recover-delivery": _recover_delivery,
@@ -681,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         ConfigError,
         DeliveryError,
         IdentityError,
+        LaunchAgentError,
         GitHubReceiptError,
         ProtocolValueError,
         ProcessLockError,
