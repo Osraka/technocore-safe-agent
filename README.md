@@ -271,13 +271,13 @@ technocore-safe-agent controller grant \
   --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json"
 ```
 
-The seed is generated in process memory and supplied directly to macOS
-Security.framework. It is never a subprocess argument, environment variable,
-output field, or filesystem value. Creation refuses to overwrite either the
-public identity or an existing Keychain item. `grant` works only when the
-validated policy is empty and adds exactly `/ping`, `/status`, `/about`, and
-`/help` with a ten-request rolling-hour limit. It cannot grant `/pr` or
-repository access.
+The seed is generated in process memory and supplied to the fixed
+`/usr/bin/security` binary through a private pseudo-terminal with echo disabled.
+It is never a subprocess argument, environment variable, output field, or
+filesystem value. Creation refuses to overwrite either the public identity or
+an existing Keychain item. `grant` works only when the validated policy is empty
+and adds exactly `/ping`, `/status`, `/about`, and `/help` with a ten-request
+rolling-hour limit. It cannot grant `/pr` or repository access.
 
 Send one exact idempotent command with:
 

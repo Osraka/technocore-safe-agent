@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import ctypes
+import errno
 import json
 import os
+import pty
 import secrets
+import select
+import signal
 import stat
+import subprocess
 import tempfile
+import termios
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -40,13 +45,13 @@ DEFAULT_CONTROLLER_SERVICE = "technocore.osraka.controller"
 DEFAULT_CONTROLLER_ACCOUNT = "Osraka-controller"
 CONTROLLER_COMMANDS = ("/ping", "/status", "/about", "/help")
 CONTROLLER_RATE_LIMIT = 10
-SECURITY_FRAMEWORK_PATH = "/System/Library/Frameworks/Security.framework/Security"
-COREFOUNDATION_FRAMEWORK_PATH = (
-    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+KEYCHAIN_PASSWORD_PROMPTS = (
+    b"password data for new item:",
+    b"retype password for new item:",
 )
-ERR_SEC_SUCCESS = 0
-ERR_SEC_ITEM_NOT_FOUND = -25300
-MAX_KEYCHAIN_SECRET_BYTES = 4_096
+KEYCHAIN_PROMPT_TIMEOUT_SECONDS = 15.0
+KEYCHAIN_PROMPT_BUFFER_BYTES = 512
+KEYCHAIN_ITEM_NOT_FOUND_EXIT_CODE = 44
 
 
 class ControllerError(RuntimeError):
@@ -72,9 +77,10 @@ class ControllerClient(Protocol):
 
 
 @dataclass(frozen=True)
-class MacOSKeychainSeedStore:
+class MacOSKeychainSeedWriter:
     service: str
     account: str
+    security_binary: ClassVar[str] = "/usr/bin/security"
 
     def __post_init__(self) -> None:
         _validate_keychain_selector(self.service, "service")
@@ -82,13 +88,50 @@ class MacOSKeychainSeedStore:
 
     def store_seed(self, seed: str) -> None:
         private_key_from_seed(seed)
-        _add_generic_password(self.service, self.account, seed)
-
-    def load_seed(self) -> str:
-        return _read_generic_password(self.service, self.account)
+        arguments = [
+            self.security_binary,
+            "add-generic-password",
+            "-a",
+            self.account,
+            "-s",
+            self.service,
+            "-l",
+            "Technocore Safe Agent Controller",
+            "-w",
+        ]
+        _run_hidden_keychain_prompt(
+            arguments,
+            seed,
+            timeout=KEYCHAIN_PROMPT_TIMEOUT_SECONDS,
+        )
 
     def delete_seed(self) -> None:
-        _delete_generic_password(self.service, self.account)
+        arguments = [
+            self.security_binary,
+            "delete-generic-password",
+            "-a",
+            self.account,
+            "-s",
+            self.service,
+        ]
+        try:
+            subprocess.run(  # noqa: S603
+                arguments,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=KEYCHAIN_PROMPT_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as error:
+            raise ControllerError("macOS security command is not available") from error
+        except subprocess.CalledProcessError as error:
+            if error.returncode == KEYCHAIN_ITEM_NOT_FOUND_EXIT_CODE:
+                return
+            raise ControllerError(
+                "cannot delete the controller Keychain item"
+            ) from error
+        except subprocess.TimeoutExpired as error:
+            raise ControllerError("controller Keychain cleanup timed out") from error
 
 
 def create_controller_identity(
@@ -234,139 +277,158 @@ def _validate_keychain_selector(value: str, label: str) -> None:
         raise ControllerError(f"controller Keychain {label} is invalid")
 
 
-def _load_security_framework() -> Any:
+def _run_hidden_keychain_prompt(
+    arguments: list[str],
+    secret: str,
+    *,
+    timeout: float,
+) -> None:
+    """Answer the fixed ``security -w`` prompts without exposing the secret."""
+
+    master_fd: int | None = None
+    session: _KeychainPromptSession | None = None
+    secret_line = bytearray(secret, "ascii")
+    secret_line.append(0x0A)
     try:
-        library = ctypes.CDLL(SECURITY_FRAMEWORK_PATH)
-    except OSError as error:
-        raise ControllerError("macOS Security.framework is not available") from error
-
-    library.SecKeychainAddGenericPassword.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_char_p,
-        ctypes.c_uint32,
-        ctypes.c_char_p,
-        ctypes.c_uint32,
-        ctypes.c_void_p,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    library.SecKeychainAddGenericPassword.restype = ctypes.c_int32
-    library.SecKeychainFindGenericPassword.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        ctypes.c_char_p,
-        ctypes.c_uint32,
-        ctypes.c_char_p,
-        ctypes.POINTER(ctypes.c_uint32),
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    library.SecKeychainFindGenericPassword.restype = ctypes.c_int32
-    library.SecKeychainItemFreeContent.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    library.SecKeychainItemFreeContent.restype = ctypes.c_int32
-    library.SecKeychainItemDelete.argtypes = [ctypes.c_void_p]
-    library.SecKeychainItemDelete.restype = ctypes.c_int32
-    return library
-
-
-def _load_corefoundation_framework() -> Any:
-    try:
-        library = ctypes.CDLL(COREFOUNDATION_FRAMEWORK_PATH)
-    except OSError as error:
-        raise ControllerError("macOS CoreFoundation is not available") from error
-    library.CFRelease.argtypes = [ctypes.c_void_p]
-    library.CFRelease.restype = None
-    return library
-
-
-def _add_generic_password(service: str, account: str, secret: str) -> None:
-    library = _load_security_framework()
-    service_bytes = service.encode("utf-8")
-    account_bytes = account.encode("utf-8")
-    secret_bytes = bytearray(secret, "ascii")
-    secret_buffer = (ctypes.c_ubyte * len(secret_bytes)).from_buffer(secret_bytes)
-    try:
-        status = library.SecKeychainAddGenericPassword(
-            None,
-            len(service_bytes),
-            service_bytes,
-            len(account_bytes),
-            account_bytes,
-            len(secret_bytes),
-            ctypes.cast(secret_buffer, ctypes.c_void_p),
-            None,
+        child_pid, master_fd = _spawn_keychain_prompt(arguments)
+        session = _KeychainPromptSession(
+            child_pid=child_pid,
+            master_fd=master_fd,
+            secret_line=secret_line,
+            deadline=time.monotonic() + timeout,
         )
+        session.run()
+    except BaseException:
+        if session is not None and session.wait_status is None:
+            _terminate_child(session.child_pid)
+        raise
     finally:
-        ctypes.memset(ctypes.addressof(secret_buffer), 0, len(secret_bytes))
-    if status != ERR_SEC_SUCCESS:
-        raise ControllerError("cannot create the controller Keychain item")
+        _wipe_bytearray(secret_line)
+        if session is not None:
+            _wipe_bytearray(session.prompt_buffer)
+        if master_fd is not None:
+            os.close(master_fd)
 
 
-def _read_generic_password(service: str, account: str) -> str:
-    library = _load_security_framework()
-    service_bytes = service.encode("utf-8")
-    account_bytes = account.encode("utf-8")
-    password_length = ctypes.c_uint32()
-    password_data = ctypes.c_void_p()
-    status = library.SecKeychainFindGenericPassword(
-        None,
-        len(service_bytes),
-        service_bytes,
-        len(account_bytes),
-        account_bytes,
-        ctypes.byref(password_length),
-        ctypes.byref(password_data),
-        None,
-    )
-    if status != ERR_SEC_SUCCESS:
-        raise ControllerError("cannot read the controller Keychain item")
+@dataclass
+class _KeychainPromptSession:
+    child_pid: int
+    master_fd: int
+    secret_line: bytearray
+    deadline: float
+    prompt_index: int = 0
+    wait_status: int | None = None
+    prompt_buffer: bytearray = field(default_factory=bytearray)
 
-    invalid_buffer = password_length.value > MAX_KEYCHAIN_SECRET_BYTES or (
-        password_length.value > 0 and password_data.value is None
-    )
+    def run(self) -> None:
+        while self.wait_status is None:
+            self._step()
+        if os.waitstatus_to_exitcode(self.wait_status) != 0 or self.prompt_index != len(
+            KEYCHAIN_PASSWORD_PROMPTS
+        ):
+            raise ControllerError("cannot create the controller Keychain item")
+
+    def _step(self) -> None:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise ControllerError("controller Keychain prompt timed out")
+        if _keychain_prompt_ready(self.master_fd, remaining):
+            self._respond_to_prompt(_read_keychain_prompt(self.master_fd))
+        waited_pid, candidate = _poll_child(self.child_pid)
+        if waited_pid == self.child_pid:
+            self.wait_status = candidate
+
+    def _respond_to_prompt(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.prompt_buffer.extend(chunk)
+        if len(self.prompt_buffer) > KEYCHAIN_PROMPT_BUFFER_BYTES:
+            del self.prompt_buffer[:-KEYCHAIN_PROMPT_BUFFER_BYTES]
+        if self.prompt_index >= len(KEYCHAIN_PASSWORD_PROMPTS):
+            return
+        if KEYCHAIN_PASSWORD_PROMPTS[self.prompt_index] not in self.prompt_buffer:
+            return
+        _disable_terminal_echo(self.master_fd)
+        _write_all(self.master_fd, self.secret_line)
+        self.prompt_index += 1
+        _wipe_bytearray(self.prompt_buffer)
+
+
+def _spawn_keychain_prompt(arguments: list[str]) -> tuple[int, int]:
     try:
-        raw = (
-            b""
-            if invalid_buffer or password_data.value is None
-            else ctypes.string_at(password_data.value, password_length.value)
-        )
+        child_pid, master_fd = pty.fork()
+    except OSError as error:
+        raise ControllerError("cannot create a private Keychain prompt") from error
+    if child_pid == 0:
+        try:
+            os.execv(arguments[0], arguments)  # noqa: S606
+        except OSError:
+            os._exit(127)
+    return child_pid, master_fd
+
+
+def _keychain_prompt_ready(master_fd: int, remaining: float) -> bool:
+    try:
+        readable, _, _ = select.select([master_fd], [], [], min(0.1, remaining))
+    except OSError as error:
+        raise ControllerError("controller Keychain prompt failed") from error
+    return bool(readable)
+
+
+def _poll_child(child_pid: int) -> tuple[int, int]:
+    try:
+        return os.waitpid(child_pid, os.WNOHANG)
+    except OSError as error:
+        raise ControllerError("cannot monitor the Keychain prompt") from error
+
+
+def _read_keychain_prompt(master_fd: int) -> bytes:
+    try:
+        return os.read(master_fd, 1_024)
+    except OSError as error:
+        if error.errno == errno.EIO:
+            return b""
+        raise ControllerError("cannot read the Keychain prompt") from error
+
+
+def _disable_terminal_echo(master_fd: int) -> None:
+    try:
+        attributes = termios.tcgetattr(master_fd)
+        attributes[3] &= ~(termios.ECHO | termios.ECHONL)
+        termios.tcsetattr(master_fd, termios.TCSANOW, attributes)
+    except termios.error as error:
+        raise ControllerError("cannot disable Keychain prompt echo") from error
+
+
+def _write_all(master_fd: int, payload: bytearray) -> None:
+    remaining = memoryview(payload)
+    try:
+        while remaining:
+            written = os.write(master_fd, remaining)
+            if written <= 0:
+                raise ControllerError("cannot answer the Keychain prompt")
+            remaining = remaining[written:]
+    except OSError as error:
+        raise ControllerError("cannot answer the Keychain prompt") from error
     finally:
-        if password_data.value is not None:
-            free_status = library.SecKeychainItemFreeContent(None, password_data)
-            if free_status != ERR_SEC_SUCCESS:
-                raise ControllerError("cannot release controller Keychain memory")
-    if invalid_buffer:
-        raise ControllerError("controller Keychain item has an invalid size")
-    try:
-        return raw.decode("ascii")
-    except UnicodeDecodeError as error:
-        raise ControllerError("controller Keychain item is not ASCII") from error
+        remaining.release()
 
 
-def _delete_generic_password(service: str, account: str) -> None:
-    library = _load_security_framework()
-    service_bytes = service.encode("utf-8")
-    account_bytes = account.encode("utf-8")
-    item_ref = ctypes.c_void_p()
-    status = library.SecKeychainFindGenericPassword(
-        None,
-        len(service_bytes),
-        service_bytes,
-        len(account_bytes),
-        account_bytes,
-        None,
-        None,
-        ctypes.byref(item_ref),
-    )
-    if status == ERR_SEC_ITEM_NOT_FOUND:
-        return
-    if status != ERR_SEC_SUCCESS or item_ref.value is None:
-        raise ControllerError("cannot locate the controller Keychain item")
+def _wipe_bytearray(value: bytearray) -> None:
+    for index in range(len(value)):
+        value[index] = 0
+    value.clear()
+
+
+def _terminate_child(child_pid: int) -> None:
     try:
-        if library.SecKeychainItemDelete(item_ref) != ERR_SEC_SUCCESS:
-            raise ControllerError("cannot delete the controller Keychain item")
-    finally:
-        _load_corefoundation_framework().CFRelease(item_ref)
+        os.kill(child_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        os.waitpid(child_pid, 0)
+    except ChildProcessError:
+        pass
 
 
 def _path_exists(path: Path) -> bool:

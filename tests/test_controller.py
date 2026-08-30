@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import ctypes
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from technocore_safe_agent.config import AgentConfig
 from technocore_safe_agent.controller import (
     CONTROLLER_COMMANDS,
     ControllerError,
-    MacOSKeychainSeedStore,
+    MacOSKeychainSeedWriter,
     create_controller_identity,
     grant_controller_to_empty_policy,
     send_controller_command,
@@ -70,152 +71,161 @@ class RecordingClient:
 
 
 class ControllerTests(unittest.TestCase):
-    def test_framework_add_receives_exact_seed_and_wipes_input_buffer(self) -> None:
-        class RecordingFramework:
-            added: tuple[bytes, bytes, bytes] | None = None
-
-            def SecKeychainAddGenericPassword(
-                self,
-                keychain: object,
-                service_length: int,
-                service: bytes,
-                account_length: int,
-                account: bytes,
-                password_length: int,
-                password: ctypes.c_void_p,
-                item_ref: object,
-            ) -> int:
-                self.added = (
-                    service[:service_length],
-                    account[:account_length],
-                    ctypes.string_at(password, password_length),
-                )
-                return 0
-
-        framework = RecordingFramework()
-        with (
-            patch(
-                "technocore_safe_agent.controller._load_security_framework",
-                return_value=framework,
-            ),
-            patch(
-                "technocore_safe_agent.controller.ctypes.memset",
-                wraps=ctypes.memset,
-            ) as wipe,
-        ):
-            controller_module._add_generic_password(
-                "technocore.test.controller",
-                "test-controller",
-                CONTROLLER_SEED,
-            )
-
-        self.assertEqual(
-            framework.added,
-            (
-                b"technocore.test.controller",
-                b"test-controller",
-                CONTROLLER_SEED.encode("ascii"),
-            ),
-        )
-        self.assertEqual(wipe.call_count, 1)
-        self.assertEqual(wipe.call_args.args[1:], (0, 64))
-
-    def test_framework_read_releases_returned_keychain_buffer(self) -> None:
-        class RecordingFramework:
-            def __init__(self) -> None:
-                self.buffer = ctypes.create_string_buffer(
-                    CONTROLLER_SEED.encode("ascii")
-                )
-                self.freed_pointer: int | None = None
-
-            def SecKeychainFindGenericPassword(
-                self,
-                keychain: object,
-                service_length: int,
-                service: bytes,
-                account_length: int,
-                account: bytes,
-                password_length: object,
-                password_data: object,
-                item_ref: object,
-            ) -> int:
-                ctypes.cast(
-                    password_length,
-                    ctypes.POINTER(ctypes.c_uint32),
-                ).contents.value = len(CONTROLLER_SEED)
-                ctypes.cast(
-                    password_data,
-                    ctypes.POINTER(ctypes.c_void_p),
-                ).contents.value = ctypes.addressof(self.buffer)
-                return 0
-
-            def SecKeychainItemFreeContent(
-                self,
-                attributes: object,
-                password_data: ctypes.c_void_p,
-            ) -> int:
-                self.freed_pointer = password_data.value
-                return 0
-
-        framework = RecordingFramework()
-        with patch(
-            "technocore_safe_agent.controller._load_security_framework",
-            return_value=framework,
-        ):
-            loaded = controller_module._read_generic_password(
-                "technocore.test.controller",
-                "test-controller",
-            )
-
-        self.assertEqual(loaded, CONTROLLER_SEED)
-        self.assertEqual(framework.freed_pointer, ctypes.addressof(framework.buffer))
-
-    def test_keychain_store_uses_framework_helpers(self) -> None:
-        store = MacOSKeychainSeedStore(
+    def test_keychain_writer_keeps_seed_out_of_argv_and_delegates_to_pty(
+        self,
+    ) -> None:
+        writer = MacOSKeychainSeedWriter(
             service="technocore.test.controller",
             account="test-controller",
         )
 
-        with (
-            patch("technocore_safe_agent.controller._add_generic_password") as add,
-            patch(
-                "technocore_safe_agent.controller._read_generic_password",
-                return_value=CONTROLLER_SEED,
-            ) as read,
-        ):
-            store.store_seed(CONTROLLER_SEED)
-            loaded = store.load_seed()
+        with patch(
+            "technocore_safe_agent.controller._run_hidden_keychain_prompt"
+        ) as prompt:
+            writer.store_seed(CONTROLLER_SEED)
 
-        add.assert_called_once_with(
-            "technocore.test.controller",
-            "test-controller",
-            CONTROLLER_SEED,
+        arguments, supplied_seed = prompt.call_args.args
+        self.assertEqual(arguments[-1], "-w")
+        self.assertNotIn(CONTROLLER_SEED, arguments)
+        self.assertNotIn(CONTROLLER_SEED, " ".join(arguments))
+        self.assertEqual(supplied_seed, CONTROLLER_SEED)
+        self.assertEqual(
+            prompt.call_args.kwargs["timeout"],
+            controller_module.KEYCHAIN_PROMPT_TIMEOUT_SECONDS,
         )
-        read.assert_called_once_with(
-            "technocore.test.controller",
-            "test-controller",
-        )
-        self.assertEqual(loaded, CONTROLLER_SEED)
 
-    def test_keychain_store_never_echoes_seed_on_failure(self) -> None:
-        store = MacOSKeychainSeedStore("service", "account")
+    def test_hidden_keychain_prompt_answers_both_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "fake_security.py"
+            script.write_text(
+                """import sys
+
+sys.stdout.write("password data for new item: ")
+sys.stdout.flush()
+first = sys.stdin.readline()
+sys.stdout.write("\\r\\nretype password for new item: ")
+sys.stdout.flush()
+second = sys.stdin.readline()
+raise SystemExit(0 if first == second and len(first.strip()) == 64 else 9)
+""",
+                encoding="utf-8",
+            )
+
+            controller_module._run_hidden_keychain_prompt(
+                [sys.executable, str(script)],
+                CONTROLLER_SEED,
+                timeout=2,
+            )
+
+    def test_hidden_keychain_prompt_times_out_without_echoing_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "slow_security.py"
+            script.write_text(
+                """import sys
+import time
+
+sys.stdout.write("password data for new item: ")
+sys.stdout.flush()
+sys.stdin.readline()
+time.sleep(10)
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ControllerError, "timed out") as raised:
+                controller_module._run_hidden_keychain_prompt(
+                    [sys.executable, str(script)],
+                    CONTROLLER_SEED,
+                    timeout=0.05,
+                )
+
+        self.assertNotIn(CONTROLLER_SEED, str(raised.exception))
+
+    def test_hidden_keychain_prompt_rejects_nonzero_exit_without_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "failing_security.py"
+            script.write_text(
+                """import sys
+
+for prompt in (
+    "password data for new item: ",
+    "retype password for new item: ",
+):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    sys.stdin.readline()
+raise SystemExit(7)
+""",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ControllerError, "cannot create") as raised:
+                controller_module._run_hidden_keychain_prompt(
+                    [sys.executable, str(script)],
+                    CONTROLLER_SEED,
+                    timeout=2,
+                )
+
+        self.assertNotIn(CONTROLLER_SEED, str(raised.exception))
+
+    def test_keychain_writer_never_echoes_seed_on_failure(self) -> None:
+        writer = MacOSKeychainSeedWriter("service", "account")
 
         with (
             patch(
-                "technocore_safe_agent.controller._add_generic_password",
+                "technocore_safe_agent.controller._run_hidden_keychain_prompt",
                 side_effect=ControllerError("cannot create Keychain item"),
             ),
             self.assertRaises(ControllerError) as raised,
         ):
-            store.store_seed(CONTROLLER_SEED)
+            writer.store_seed(CONTROLLER_SEED)
 
         self.assertNotIn(CONTROLLER_SEED, str(raised.exception))
 
-    def test_keychain_store_rejects_unsafe_item_selectors(self) -> None:
+    def test_keychain_writer_deletes_only_the_exact_item(self) -> None:
+        writer = MacOSKeychainSeedWriter("service", "account")
+
+        with patch("technocore_safe_agent.controller.subprocess.run") as run:
+            writer.delete_seed()
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/bin/security",
+                "delete-generic-password",
+                "-a",
+                "account",
+                "-s",
+                "service",
+            ],
+        )
+        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertNotIn("input", run.call_args.kwargs)
+
+    def test_keychain_writer_ignores_only_item_not_found_on_delete(self) -> None:
+        writer = MacOSKeychainSeedWriter("service", "account")
+        missing = subprocess.CalledProcessError(44, ["security"])
+        denied = subprocess.CalledProcessError(1, ["security"])
+
+        with patch(
+            "technocore_safe_agent.controller.subprocess.run",
+            side_effect=missing,
+        ):
+            writer.delete_seed()
+        with (
+            patch(
+                "technocore_safe_agent.controller.subprocess.run",
+                side_effect=denied,
+            ),
+            self.assertRaisesRegex(ControllerError, "cannot delete"),
+        ):
+            writer.delete_seed()
+
+    def test_keychain_writer_rejects_unsafe_item_selectors(self) -> None:
         with self.assertRaisesRegex(ControllerError, "service is invalid"):
-            MacOSKeychainSeedStore("service\nother", "account")
+            MacOSKeychainSeedWriter("service\nother", "account")
         with self.assertRaisesRegex(ControllerError, "account is invalid"):
-            MacOSKeychainSeedStore("service", "")
+            MacOSKeychainSeedWriter("service", "")
 
     def test_create_writes_only_public_identity_and_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
