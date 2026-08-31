@@ -19,9 +19,11 @@ from technocore_safe_agent.crypto import (
 )
 
 
-DEFAULT_IDENTITY_PATH = Path(
-    "~/Library/Application Support/Technocore/Osraka/public-identity.json"
+DEFAULT_AGENT_NAME = "SafeAgent"
+DEFAULT_RUNTIME_DIRECTORY = Path(
+    f"~/Library/Application Support/Technocore/{DEFAULT_AGENT_NAME}"
 ).expanduser()
+DEFAULT_IDENTITY_PATH = DEFAULT_RUNTIME_DIRECTORY / "public-identity.json"
 
 
 class SeedProvider(Protocol):

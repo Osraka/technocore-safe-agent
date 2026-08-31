@@ -10,10 +10,20 @@ from pathlib import Path
 
 from technocore_safe_agent.audit import SignedAuditLog
 from technocore_safe_agent.cli import build_parser, main
+from technocore_safe_agent.controller import (
+    DEFAULT_CONTROLLER_ACCOUNT,
+    DEFAULT_CONTROLLER_IDENTITY_PATH,
+    DEFAULT_CONTROLLER_SERVICE,
+)
 from technocore_safe_agent.crypto import (
     did_from_private_key,
     fingerprint_of_did,
     private_key_from_seed,
+)
+from technocore_safe_agent.identity import (
+    DEFAULT_AGENT_NAME,
+    DEFAULT_IDENTITY_PATH,
+    DEFAULT_RUNTIME_DIRECTORY,
 )
 from technocore_safe_agent.receipt import (
     PullRequestEvidence,
@@ -55,6 +65,23 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_public_defaults_are_generic_and_share_one_runtime_directory(self) -> None:
+        doctor = build_parser().parse_args(["doctor"])
+        provision = build_parser().parse_args(["provision"])
+        controller = build_parser().parse_args(["controller", "create"])
+
+        self.assertEqual(DEFAULT_AGENT_NAME, "SafeAgent")
+        self.assertEqual(doctor.identity, DEFAULT_IDENTITY_PATH)
+        self.assertEqual(provision.name, DEFAULT_AGENT_NAME)
+        self.assertEqual(controller.identity, DEFAULT_CONTROLLER_IDENTITY_PATH)
+        self.assertEqual(DEFAULT_IDENTITY_PATH.parent, DEFAULT_RUNTIME_DIRECTORY)
+        self.assertEqual(
+            DEFAULT_CONTROLLER_IDENTITY_PATH.parent, DEFAULT_RUNTIME_DIRECTORY
+        )
+        self.assertEqual(DEFAULT_CONTROLLER_SERVICE, "technocore.safe-agent.controller")
+        self.assertEqual(DEFAULT_CONTROLLER_ACCOUNT, "safe-agent-controller")
+        self.assertEqual(DEFAULT_RUNTIME_DIRECTORY.name, DEFAULT_AGENT_NAME)
+
     def test_controller_parser_accepts_only_the_closed_command_set(self) -> None:
         args = build_parser().parse_args(["controller", "send", "/status"])
         self.assertEqual(args.command, "controller")

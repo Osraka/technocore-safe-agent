@@ -24,7 +24,7 @@ technocore-safe-agent controller create
 ```
 
 The default public record is
-`~/Library/Application Support/Technocore/Osraka/controller-identity.json`.
+`~/Library/Application Support/Technocore/SafeAgent/controller-identity.json`.
 The command requires its existing parent directory to be a real, owner-only
 directory. The public JSON is created exclusively with mode `0600` and contains
 only the DID, fingerprint, creation time, and Keychain selectors.

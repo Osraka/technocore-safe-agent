@@ -34,15 +34,15 @@ from technocore_safe_agent.crypto import (
     sign_room_message,
     validate_did,
 )
-from technocore_safe_agent.identity import IdentityRecord
+from technocore_safe_agent.identity import DEFAULT_RUNTIME_DIRECTORY, IdentityRecord
 from technocore_safe_agent.protocol import RoomMessage
 from technocore_safe_agent.state import AgentState
 
-DEFAULT_CONTROLLER_IDENTITY_PATH = Path(
-    "~/Library/Application Support/Technocore/Osraka/controller-identity.json"
-).expanduser()
-DEFAULT_CONTROLLER_SERVICE = "technocore.osraka.controller"
-DEFAULT_CONTROLLER_ACCOUNT = "Osraka-controller"
+DEFAULT_CONTROLLER_IDENTITY_PATH = (
+    DEFAULT_RUNTIME_DIRECTORY / "controller-identity.json"
+)
+DEFAULT_CONTROLLER_SERVICE = "technocore.safe-agent.controller"
+DEFAULT_CONTROLLER_ACCOUNT = "safe-agent-controller"
 CONTROLLER_COMMANDS = ("/ping", "/status", "/about", "/help")
 CONTROLLER_RATE_LIMIT = 10
 KEYCHAIN_PASSWORD_PROMPTS = (

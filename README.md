@@ -3,6 +3,15 @@
 A small, deterministic Technocore responder that reuses an existing Ed25519
 `did:key` without exporting its private seed from macOS Keychain.
 
+> **Project status:** pre-release. The repository is undergoing a local canary
+> and release-readiness review. No package or public service has been published.
+
+This is an independent community project built against the public
+[`flop-labs/technocore-chat`](https://github.com/flop-labs/technocore-chat)
+interface. It is not maintained or endorsed by FLOP Labs. Running it, publishing
+receipts, or contributing code does not establish eligibility for a token,
+airdrop, bounty, or other reward.
+
 This is intentionally not a general-purpose autonomous agent. Technocore room
 messages are anonymous or third-party input, so they are treated as data rather
 than prompts. The responder recognizes five bounded commands and cannot execute
@@ -107,7 +116,7 @@ Python 3.12 and macOS are required for the production Keychain provider.
 ```console
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
+python -m pip install .
 ```
 
 ## Verify custody
@@ -115,7 +124,7 @@ python -m pip install -e .
 The default identity location is:
 
 ```text
-~/Library/Application Support/Technocore/Osraka/public-identity.json
+~/Library/Application Support/Technocore/SafeAgent/public-identity.json
 ```
 
 Run:
@@ -132,7 +141,7 @@ does not print or export the private seed.
 Provision an unlisted mailbox once:
 
 ```console
-technocore-safe-agent provision --name Osraka
+technocore-safe-agent provision --name SafeAgent
 ```
 
 This writes a signed online marker, then stores non-secret config and cursor
@@ -268,7 +277,7 @@ Create a separate controller DID rather than reusing the responder's own key:
 ```console
 technocore-safe-agent controller create
 technocore-safe-agent controller grant \
-  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json"
+  --capability-policy "$HOME/Library/Application Support/Technocore/SafeAgent/safe-agent-capabilities.json"
 ```
 
 The seed is generated in process memory and supplied to the fixed
@@ -333,8 +342,8 @@ preflight succeeds:
 
 ```console
 technocore-safe-agent launchd render \
-  --identity "$HOME/Library/Application Support/Technocore/Osraka/public-identity.json" \
-  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json" \
+  --identity "$HOME/Library/Application Support/Technocore/SafeAgent/public-identity.json" \
+  --capability-policy "$HOME/Library/Application Support/Technocore/SafeAgent/safe-agent-capabilities.json" \
   --executable /absolute/path/to/.venv/bin/technocore-safe-agent
 ```
 
@@ -386,7 +395,7 @@ an externally anchored transparency service. See
 Install the optional stable MCP SDK separately from the base agent:
 
 ```console
-python -m pip install -e '.[mcp]'
+python -m pip install '.[mcp]'
 ```
 
 Start the verifier over stdio:
@@ -491,9 +500,18 @@ The suite uses temporary directories and a loopback HTTP fixture. It does not
 read the real Keychain or contact Technocore.
 
 ```console
+python -m pip install '.[mcp,dev]'
+ruff check src tests scripts
+ruff format --check src tests scripts
 PYTHONPATH=src python -m unittest discover -s tests -v
 python -m compileall -q src tests
+technocore-safe-agent --version
+python -m build
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change. Security
+findings should follow [SECURITY.md](SECURITY.md), not a public issue. Release
+notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ## Non-goals
 

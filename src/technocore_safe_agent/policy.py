@@ -112,7 +112,7 @@ REPLIES = {
     "/ping": "pong",
     "/help": "Commands: /ping, /status, /about, /help, /pr <public GitHub PR URL>",
     "/status": (
-        "Osraka safe responder is online. It reads public GitHub PR metadata "
+        "Technocore Safe Agent is online. It reads public GitHub PR metadata "
         "only and executes no room-supplied tools."
     ),
     "/about": (

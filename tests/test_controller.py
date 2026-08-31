@@ -355,7 +355,7 @@ raise SystemExit(7)
             agent_did = did_from_private_key(private_key_from_seed(AGENT_SEED))
             config = AgentConfig(
                 schema="technocore-safe-agent-config-v1",
-                name="Osraka",
+                name="SafeAgent",
                 did=agent_did,
                 fingerprint=fingerprint_of_did(agent_did),
                 room="mb-p-controller-test",
@@ -422,7 +422,7 @@ raise SystemExit(7)
             agent_did = did_from_private_key(private_key_from_seed(AGENT_SEED))
             config = AgentConfig(
                 schema="technocore-safe-agent-config-v1",
-                name="Osraka",
+                name="SafeAgent",
                 did=agent_did,
                 fingerprint=fingerprint_of_did(agent_did),
                 room="mb-p-controller-test",

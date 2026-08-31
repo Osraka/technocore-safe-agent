@@ -69,7 +69,7 @@ class ProvisionTests(unittest.TestCase):
             record, key = self._identity()
             client = ProvisionClient()
             event = provision_mailbox(
-                name="Osraka",
+                name="SafeAgent",
                 record=record,
                 private_key=key,  # type: ignore[arg-type]
                 client=client,  # type: ignore[arg-type]
@@ -93,7 +93,7 @@ class ProvisionTests(unittest.TestCase):
             record, key = self._identity()
             with self.assertRaisesRegex(UncertainWriteError, "uncertain result"):
                 provision_mailbox(
-                    name="Osraka",
+                    name="SafeAgent",
                     record=record,
                     private_key=key,  # type: ignore[arg-type]
                     client=ProvisionClient(fail=True),  # type: ignore[arg-type]
@@ -137,7 +137,7 @@ class ProvisionTests(unittest.TestCase):
             record, key = self._identity()
             with self.assertRaises(UncertainWriteError):
                 provision_mailbox(
-                    name="Osraka",
+                    name="SafeAgent",
                     record=record,
                     private_key=key,  # type: ignore[arg-type]
                     client=ProvisionClient(fail=True),  # type: ignore[arg-type]
@@ -147,7 +147,7 @@ class ProvisionTests(unittest.TestCase):
                 )
             pending = AgentConfig.load(config_path)
             text = (
-                f"safe-responder-online-v1 agent:Osraka did:{record.did} "
+                f"safe-responder-online-v1 agent:SafeAgent did:{record.did} "
                 "commands:/ping,/status,/about,/help policy:signed-commands-only no-tools"
             )
             found = RoomMessage(7, record.did, text, pending.provision_nonce)
@@ -174,7 +174,7 @@ class ProvisionTests(unittest.TestCase):
             record, key = self._identity()
             with self.assertRaises(UncertainWriteError):
                 provision_mailbox(
-                    name="Osraka",
+                    name="SafeAgent",
                     record=record,
                     private_key=key,  # type: ignore[arg-type]
                     client=ProvisionClient(fail=True),  # type: ignore[arg-type]

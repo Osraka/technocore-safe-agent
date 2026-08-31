@@ -84,7 +84,7 @@ class StaticReceiptService:
             repository="foundry-rs/foundry",
             number=15797,
             url=PR_URL,
-            author="Osraka",
+            author="SafeAgent",
             state="open",
             merged=False,
             draft=False,
@@ -126,7 +126,7 @@ class PilotTests(unittest.TestCase):
             )
             config = AgentConfig(
                 schema="technocore-safe-agent-config-v1",
-                name="Osraka",
+                name="SafeAgent",
                 did=agent_did,
                 fingerprint=record.fingerprint,
                 room=ROOM,
@@ -217,7 +217,7 @@ class PilotTests(unittest.TestCase):
             )
             config = AgentConfig(
                 schema="technocore-safe-agent-config-v1",
-                name="Osraka",
+                name="SafeAgent",
                 did=agent_did,
                 fingerprint=record.fingerprint,
                 room=ROOM,
@@ -271,7 +271,7 @@ class PilotTests(unittest.TestCase):
             )
             config = AgentConfig(
                 schema="technocore-safe-agent-config-v1",
-                name="Osraka",
+                name="SafeAgent",
                 did=agent_did,
                 fingerprint=record.fingerprint,
                 room=ROOM,

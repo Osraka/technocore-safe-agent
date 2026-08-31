@@ -16,7 +16,7 @@ class ConfigTests(unittest.TestCase):
         did = did_from_private_key(private_key_from_seed("01" * 32))
         self.config = AgentConfig(
             schema="technocore-safe-agent-config-v1",
-            name="Osraka",
+            name="SafeAgent",
             did=did,
             fingerprint=fingerprint_of_did(did),
             room="mb-p-test",

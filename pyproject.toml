@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.2.0"
 description = "A keychain-backed Technocore responder with signed public PR receipts."
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "certifi>=2024.7.4",
   "cryptography>=42,<51",
@@ -16,6 +17,10 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=2,<3"]
+dev = [
+  "build>=1.2,<2",
+  "ruff>=0.9,<1",
+]
 
 [project.scripts]
 technocore-safe-agent = "technocore_safe_agent.cli:main"
@@ -23,3 +28,10 @@ technocore-safe-agent-mcp = "technocore_safe_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

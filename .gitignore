@@ -14,3 +14,19 @@ dist/
 *.key
 *private-key*.json
 .env
+
+# Default runtime artifacts contain identity or operational metadata.
+public-identity.json
+controller-identity.json
+safe-agent-config.json
+safe-agent-state.json
+controller-state.json
+safe-agent-capabilities.json
+safe-agent-delivery.json
+safe-agent-audit.jsonl
+safe-agent.lock
+controller.lock
+safe-agent.stdout.log
+safe-agent.stderr.log
+com.technocore.*.plist
+.DS_Store

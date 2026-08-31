@@ -64,7 +64,7 @@ class LaunchAgentTests(unittest.TestCase):
         )
         AgentConfig(
             schema="technocore-safe-agent-config-v1",
-            name="Osraka",
+            name="SafeAgent",
             did=DID,
             fingerprint=fingerprint_of_did(DID),
             room=ROOM,

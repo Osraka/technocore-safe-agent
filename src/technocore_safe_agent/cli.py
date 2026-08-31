@@ -42,6 +42,7 @@ from technocore_safe_agent.delivery import DeliveryError, DeliveryJournal
 from technocore_safe_agent.delivery_recovery import recover_delivery
 from technocore_safe_agent.health import HealthPaths, inspect_operational_health
 from technocore_safe_agent.identity import (
+    DEFAULT_AGENT_NAME,
     DEFAULT_IDENTITY_PATH,
     IdentityRecord,
     MacOSKeychainSeedProvider,
@@ -198,7 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
         "provision", help="create one unlisted signed mailbox and local config"
     )
     _shared_identity_option(provision)
-    provision.add_argument("--name", default="Osraka")
+    provision.add_argument("--name", default=DEFAULT_AGENT_NAME)
     provision.add_argument("--base-url", default="https://technocore.chat")
     provision.add_argument("--timeout", type=float, default=20.0)
     provision.add_argument("--config", type=Path)

@@ -36,6 +36,7 @@ class PolicyTests(unittest.TestCase):
     ) -> None:
         accepted = self.policy.decide(RoomMessage(1, PEER, "/status", "10"))
         self.assertEqual(accepted.action, "reply")
+        self.assertIn("Technocore Safe Agent", accepted.reply or "")
         self.assertIn("executes no", accepted.reply or "")
 
         injected = self.policy.decide(

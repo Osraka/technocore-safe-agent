@@ -19,8 +19,8 @@ journal, audit, and lock paths default beside the selected identity:
 ```console
 technocore-safe-agent launchd render \
   --label com.technocore.safe-agent \
-  --identity "$HOME/Library/Application Support/Technocore/Osraka/public-identity.json" \
-  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json" \
+  --identity "$HOME/Library/Application Support/Technocore/SafeAgent/public-identity.json" \
+  --capability-policy "$HOME/Library/Application Support/Technocore/SafeAgent/safe-agent-capabilities.json" \
   --executable /absolute/path/to/.venv/bin/technocore-safe-agent
 ```
 
@@ -31,8 +31,8 @@ avoids truncating a previously reviewed job when a new preflight fails:
 umask 077
 candidate="$(mktemp "$HOME/Library/LaunchAgents/com.technocore.safe-agent.XXXXXX")"
 technocore-safe-agent launchd render \
-  --identity "$HOME/Library/Application Support/Technocore/Osraka/public-identity.json" \
-  --capability-policy "$HOME/Library/Application Support/Technocore/Osraka/safe-agent-capabilities.json" \
+  --identity "$HOME/Library/Application Support/Technocore/SafeAgent/public-identity.json" \
+  --capability-policy "$HOME/Library/Application Support/Technocore/SafeAgent/safe-agent-capabilities.json" \
   --executable /absolute/path/to/.venv/bin/technocore-safe-agent > "$candidate"
 plutil -lint "$candidate"
 ```

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[mcp,dev]"
+      - name: Lint
+        run: ruff check src tests scripts
+      - name: Check formatting
+        run: ruff format --check src tests scripts
+      - name: Run tests
+        run: PYTHONPATH=src python -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python -m compileall -q src tests scripts
+      - name: Smoke-test installed CLI
+        run: technocore-safe-agent --version
+
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build frontend
+        run: python -m pip install --upgrade pip build
+      - name: Build wheel and source distribution
+        run: python -m build
