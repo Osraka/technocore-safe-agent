@@ -2,6 +2,20 @@
 
 Notable changes to this project are documented in this file.
 
+## 0.2.1 - 2026-09-04
+
+### Added
+
+- Public positive and tampered-output `work-receipt-v1` implementation
+  fixtures backed only by deterministic test identities.
+- Regression tests that pin the fixture repository, release commit, command,
+  result, signer roles, and tamper rejection behavior.
+
+### Changed
+
+- Source distributions now include the fixture vectors and their trust-boundary
+  documentation.
+
 ## 0.2.0 - 2026-09-04
 
 ### Added
