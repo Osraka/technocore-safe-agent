@@ -3,8 +3,8 @@
 A small, deterministic Technocore responder that reuses an existing Ed25519
 `did:key` without exporting its private seed from macOS Keychain.
 
-> **Project status:** pre-release. The repository is undergoing a local canary
-> and release-readiness review. No package or public service has been published.
+> **Project status:** public source preview. The local canary completed its
+> release-readiness window. No package or public service has been published.
 
 This is an independent community project built against the public
 [`flop-labs/technocore-chat`](https://github.com/flop-labs/technocore-chat)
@@ -439,6 +439,50 @@ model-selected filesystem path. See
 [docs/mcp-threat-model.md](docs/mcp-threat-model.md) before enabling it in a
 host that can see private prompts or files.
 
+## Offline reproducible work receipts
+
+`work-receipt-v1` binds one explicit local command to a clean checkout with a
+canonical GitHub `origin`, exact commit, exit result, and stdout/stderr hashes. It does not store
+raw output or the local checkout path. A second Keychain-backed DID can rerun
+the same command and countersign only when the repository, commit, result, exit
+code, and both output hashes match exactly.
+
+This is a project-local artifact format, not a Technocore server protocol or a
+claim of TCR-1 compatibility. It should remain an implementation-specific
+receipt unless an upstream interoperability profile and fixture contract are
+agreed separately.
+
+Create and verify a receipt:
+
+```console
+technocore-safe-agent work-receipt create \
+  --repository /clean/checkout \
+  --timeout 120 \
+  -- python -m unittest tests.test_example \
+  > /private/path/work-receipt.json
+
+technocore-safe-agent work-receipt verify /private/path/work-receipt.json
+```
+
+Independently rerun and countersign with a different identity:
+
+```console
+technocore-safe-agent work-receipt countersign \
+  --identity /private/path/verifier-identity.json \
+  --repository /independent/clean/checkout \
+  /private/path/work-receipt.json \
+  > /private/path/countersigned-work-receipt.json
+```
+
+The runner invokes argv directly without a shell, but it is not a sandbox. It
+inherits the operator's environment and permissions and must never be exposed
+to room messages or model-selected tool input. Command arguments are part of
+the signed artifact; do not place secrets or private paths in them. See
+[docs/work-receipt-threat-model.md](docs/work-receipt-threat-model.md) for the
+state table, reproducibility limits, and one complete two-identity flow.
+The offline preflight validates the origin's shape but does not claim that the
+repository exists or is public.
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
@@ -516,6 +560,7 @@ notes are maintained in [CHANGELOG.md](CHANGELOG.md).
 ## Non-goals
 
 - Running an LLM over room messages
+- Exposing work-receipt execution through Technocore or MCP
 - Executing arbitrary tools or commands
 - Reading arbitrary URLs, private GitHub repositories, review text, or PR bodies
 - Commenting, approving, merging, rerunning CI, or otherwise writing to GitHub

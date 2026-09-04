@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from technocore_safe_agent.audit import SignedAuditLog
 from technocore_safe_agent.cli import build_parser, main
@@ -24,6 +27,7 @@ from technocore_safe_agent.identity import (
     DEFAULT_AGENT_NAME,
     DEFAULT_IDENTITY_PATH,
     DEFAULT_RUNTIME_DIRECTORY,
+    IdentityRecord,
 )
 from technocore_safe_agent.receipt import (
     PullRequestEvidence,
@@ -33,6 +37,50 @@ from technocore_safe_agent.receipt import (
 
 
 SEED = "04" * 32
+VERIFIER_SEED = "05" * 32
+
+
+def _work_repository(root: Path) -> Path:
+    repository = root / "project"
+    repository.mkdir()
+    commands = (
+        ("init", "--quiet"),
+        ("config", "user.name", "CLI Test"),
+        ("config", "user.email", "cli-test@example.invalid"),
+        (
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/project.git",
+        ),
+    )
+    for command in commands:
+        subprocess.run(
+            ["git", "-C", str(repository), *command],
+            check=True,
+            capture_output=True,
+        )
+    (repository / "value.txt").write_text("stable\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "value.txt"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "--quiet", "-m", "initial"],
+        check=True,
+        capture_output=True,
+    )
+    return repository
+
+
+def _identity(seed: str) -> tuple[IdentityRecord, object]:
+    key = private_key_from_seed(seed)
+    did = did_from_private_key(key)
+    return (
+        IdentityRecord(did, fingerprint_of_did(did), "test-service", "test-account"),
+        key,
+    )
 
 
 def _receipt() -> dict[str, object]:
@@ -65,6 +113,95 @@ def _receipt() -> dict[str, object]:
 
 
 class CliTests(unittest.TestCase):
+    def test_work_receipt_parser_preserves_command_argv(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "work-receipt",
+                "create",
+                "--repository",
+                ".",
+                "--timeout",
+                "5",
+                "--",
+                "python",
+                "-c",
+                "print('ok')",
+            ]
+        )
+        self.assertEqual(args.work_receipt_command, "create")
+        self.assertEqual(args.work_command, ["--", "python", "-c", "print('ok')"])
+
+    def test_work_receipt_cli_create_verify_and_countersign(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = _work_repository(root)
+            command = [sys.executable, "-c", "print('stable')"]
+            worker = _identity(SEED)
+            verifier = _identity(VERIFIER_SEED)
+
+            created_stdout = io.StringIO()
+            with (
+                patch("technocore_safe_agent.cli._load_identity", return_value=worker),
+                redirect_stdout(created_stdout),
+            ):
+                result = main(
+                    [
+                        "work-receipt",
+                        "create",
+                        "--repository",
+                        str(repository),
+                        "--timeout",
+                        "5",
+                        "--",
+                        *command,
+                    ]
+                )
+            self.assertEqual(result, 0)
+            receipt_path = root / "receipt.json"
+            receipt_path.write_text(created_stdout.getvalue(), encoding="utf-8")
+
+            verified_stdout = io.StringIO()
+            with (
+                patch("technocore_safe_agent.cli._load_identity") as load_identity,
+                redirect_stdout(verified_stdout),
+            ):
+                result = main(["work-receipt", "verify", str(receipt_path)])
+            self.assertEqual(result, 0)
+            load_identity.assert_not_called()
+            self.assertEqual(
+                json.loads(verified_stdout.getvalue())["countersignatures"], 0
+            )
+
+            countersigned_stdout = io.StringIO()
+            with (
+                patch(
+                    "technocore_safe_agent.cli._load_identity", return_value=verifier
+                ),
+                redirect_stdout(countersigned_stdout),
+            ):
+                result = main(
+                    [
+                        "work-receipt",
+                        "countersign",
+                        "--repository",
+                        str(repository),
+                        str(receipt_path),
+                    ]
+                )
+            self.assertEqual(result, 0)
+            countersigned_path = root / "countersigned.json"
+            countersigned_path.write_text(
+                countersigned_stdout.getvalue(), encoding="utf-8"
+            )
+
+            final_stdout = io.StringIO()
+            with redirect_stdout(final_stdout):
+                result = main(["work-receipt", "verify", str(countersigned_path)])
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                json.loads(final_stdout.getvalue())["countersignatures"], 1
+            )
+
     def test_public_defaults_are_generic_and_share_one_runtime_directory(self) -> None:
         doctor = build_parser().parse_args(["doctor"])
         provision = build_parser().parse_args(["provision"])

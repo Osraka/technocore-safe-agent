@@ -311,6 +311,11 @@ class PilotTests(unittest.TestCase):
 
         self.assertEqual(main(["--pull-request", PR_URL]), 2)
 
+    def test_work_receipt_pilot_requires_explicit_confirmation(self) -> None:
+        from scripts.run_work_receipt_pilot import main
+
+        self.assertEqual(main([]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,8 @@ Notable changes to this project are documented in this file.
 - Delivery recovery, process locking, and signed hash-chained local audits.
 - Offline operational health checks and conservative LaunchAgent rendering.
 - A read-only stdio MCP verifier for contribution receipts and fixed audit logs.
+- Offline `work-receipt-v1` creation, verification, and exact-match
+  countersigning for clean public Git checkouts.
 - Cross-version CI, packaging checks, and public contribution/security guidance.
 
 ### Changed
