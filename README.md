@@ -3,8 +3,9 @@
 A small, deterministic Technocore responder that reuses an existing Ed25519
 `did:key` without exporting its private seed from macOS Keychain.
 
-> **Project status:** public source preview. The local canary completed its
-> release-readiness window. No package or public service has been published.
+> **Project status:** public source release. The local canary completed its
+> release-readiness window. No package-registry distribution or public service
+> has been published.
 
 This is an independent community project built against the public
 [`flop-labs/technocore-chat`](https://github.com/flop-labs/technocore-chat)
