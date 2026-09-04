@@ -68,6 +68,13 @@ from technocore_safe_agent.receipt import (
     verify_signed_receipt,
 )
 from technocore_safe_agent.state import AgentState, StateError
+from technocore_safe_agent.work_receipt import (
+    WorkReceiptError,
+    countersign_work_receipt,
+    create_work_receipt,
+    render_work_receipt,
+    verify_work_receipt,
+)
 
 
 def _shared_identity_option(parser: argparse.ArgumentParser) -> None:
@@ -260,6 +267,44 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-receipt", help="verify a saved contribution receipt without Keychain"
     )
     verify_receipt.add_argument("path", type=Path, help="receipt JSON file")
+
+    work_receipt = commands.add_parser(
+        "work-receipt",
+        help="create and independently verify an offline work receipt",
+    )
+    work_receipt_commands = work_receipt.add_subparsers(
+        dest="work_receipt_command", required=True
+    )
+    work_receipt_create = work_receipt_commands.add_parser(
+        "create", help="run one command in a clean checkout and sign its result"
+    )
+    _shared_identity_option(work_receipt_create)
+    work_receipt_create.add_argument(
+        "--repository", type=Path, default=Path("."), help="clean Git checkout"
+    )
+    work_receipt_create.add_argument("--timeout", type=float, default=300.0)
+    work_receipt_create.add_argument(
+        "work_command",
+        nargs=argparse.REMAINDER,
+        help="command argv after --; no shell interpretation is performed",
+    )
+
+    work_receipt_verify = work_receipt_commands.add_parser(
+        "verify", help="verify a work receipt and all countersignatures offline"
+    )
+    work_receipt_verify.add_argument("path", type=Path, help="work receipt JSON file")
+
+    work_receipt_countersign = work_receipt_commands.add_parser(
+        "countersign",
+        help="rerun a receipt at the same commit and sign an exact match",
+    )
+    _controller_identity_option(work_receipt_countersign)
+    work_receipt_countersign.add_argument(
+        "--repository", type=Path, default=Path("."), help="clean Git checkout"
+    )
+    work_receipt_countersign.add_argument(
+        "path", type=Path, help="work receipt JSON file"
+    )
 
     audit = commands.add_parser("audit", help="inspect the signed local audit log")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
@@ -617,6 +662,61 @@ def _verify_receipt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_text_artifact(path: Path, label: str, *, maximum_bytes: int) -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        if resolved.stat().st_size > maximum_bytes:
+            raise WorkReceiptError(f"{label} exceeds the artifact size limit")
+        return resolved.read_text(encoding="utf-8")
+    except OSError as error:
+        raise WorkReceiptError(f"cannot read {label} {resolved}: {error}") from error
+    except UnicodeDecodeError as error:
+        raise WorkReceiptError(f"{label} must be UTF-8 JSON") from error
+
+
+def _work_receipt(args: argparse.Namespace) -> int:
+    if args.work_receipt_command == "create":
+        command = list(args.work_command)
+        if command[:1] == ["--"]:
+            command = command[1:]
+        record, private_key = _load_identity(args.identity)
+        receipt = create_work_receipt(
+            args.repository,
+            command,
+            issuer_did=record.did,
+            private_key=private_key,
+            timeout=args.timeout,
+        )
+        print(render_work_receipt(receipt), flush=True)
+        return 0
+    if args.work_receipt_command == "verify":
+        raw = _read_text_artifact(args.path, "work receipt", maximum_bytes=128 * 1024)
+        summary = verify_work_receipt(raw)
+        _print_event(
+            {
+                "status": "valid",
+                "schema": summary.payload["schema"],
+                "repository": summary.payload["repository"],
+                "commit": summary.payload["commit"],
+                "result": summary.payload["result"],
+                "countersignatures": summary.countersignatures,
+            }
+        )
+        return 0
+    if args.work_receipt_command == "countersign":
+        raw = _read_text_artifact(args.path, "work receipt", maximum_bytes=128 * 1024)
+        record, private_key = _load_identity(args.identity)
+        updated = countersign_work_receipt(
+            raw,
+            args.repository,
+            verifier_did=record.did,
+            private_key=private_key,
+        )
+        print(render_work_receipt(updated), flush=True)
+        return 0
+    raise WorkReceiptError("unsupported work receipt command")
+
+
 def _audit(args: argparse.Namespace) -> int:
     if args.audit_command != "verify":
         raise AuditError("unsupported audit command")
@@ -851,6 +951,7 @@ def main(argv: list[str] | None = None) -> int:
             "recover-delivery": _recover_delivery,
             "receipt": _receipt,
             "verify-receipt": _verify_receipt,
+            "work-receipt": _work_receipt,
             "audit": _audit,
             "run": _run,
         }[args.command]
@@ -875,6 +976,7 @@ def main(argv: list[str] | None = None) -> int:
         ResponseError,
         StateError,
         TransportError,
+        WorkReceiptError,
     ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
