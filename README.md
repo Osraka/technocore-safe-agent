@@ -484,6 +484,10 @@ state table, reproducibility limits, and one complete two-identity flow.
 The offline preflight validates the origin's shape but does not claim that the
 repository exists or is public.
 
+Public positive and negative verification vectors are documented in
+[fixtures/work-receipt-v1/README.md](fixtures/work-receipt-v1/README.md). They
+use test-only identities and do not represent production authority.
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
