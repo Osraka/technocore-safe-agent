@@ -447,6 +447,11 @@ raw output or the local checkout path. A second Keychain-backed DID can rerun
 the same command and countersign only when the repository, commit, result, exit
 code, and both output hashes match exactly.
 
+This is a project-local artifact format, not a Technocore server protocol or a
+claim of TCR-1 compatibility. It should remain an implementation-specific
+receipt unless an upstream interoperability profile and fixture contract are
+agreed separately.
+
 Create and verify a receipt:
 
 ```console

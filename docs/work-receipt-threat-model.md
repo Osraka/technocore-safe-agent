@@ -16,6 +16,11 @@ Neither signature proves who controlled a machine, who authored the commit,
 whether the command is a meaningful test, whether dependencies were trustworthy,
 or whether the code is safe.
 
+`work-receipt-v1` is local to this project. It is not part of the Technocore
+server protocol and does not claim compatibility with TCR-1 or another external
+receipt profile. Interoperability requires an agreed profile and shared fixture
+vectors; matching concepts or signature primitives are not sufficient.
+
 ## Artifact shape
 
 The outer `work-receipt-envelope-v1` object contains:
