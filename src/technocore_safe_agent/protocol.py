@@ -132,7 +132,10 @@ def _request_json(request: Request, timeout: float) -> dict[str, Any]:
         ) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as error:
-        detail = _safe_error_detail(error.read(MAX_ERROR_BYTES))
+        try:
+            detail = _safe_error_detail(error.read(MAX_ERROR_BYTES))
+        finally:
+            error.close()
         message = f"Technocore returned HTTP {error.code}"
         if detail:
             message += f": {detail}"
