@@ -16,7 +16,12 @@ from technocore_safe_agent.capabilities import (
 from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
 from technocore_safe_agent.delivery import DeliveryJournal
 from technocore_safe_agent.policy import CommandPolicy
-from technocore_safe_agent.protocol import RoomMessage, RoomSnapshot, TransportError
+from technocore_safe_agent.protocol import (
+    ResponseError,
+    RoomMessage,
+    RoomSnapshot,
+    TransportError,
+)
 from technocore_safe_agent.receipt import GitHubReceiptError
 from technocore_safe_agent.state import AgentState
 from technocore_safe_agent.state import StateError
@@ -30,7 +35,7 @@ class FakeClient:
     def __init__(self, *, fail_write: bool = False) -> None:
         self.fail_write = fail_write
         self.posts: list[dict[str, object]] = []
-        self.snapshot = RoomSnapshot("room", 1, 4, ())
+        self.snapshot = RoomSnapshot("room", 1, 4, (), generation=3)
 
     def read_room(self, *args: object, **kwargs: object) -> RoomSnapshot:
         return self.snapshot
@@ -142,6 +147,67 @@ class AgentTests(unittest.TestCase):
             responder = self._responder(root, send=False, client=client)
             event = responder.bootstrap_latest()
             self.assertEqual(event["cursor"], 4)
+            self.assertEqual(responder.state.cursor_for("room"), 4)
+            self.assertEqual(responder.state.generation_for("room"), 3)
+
+    def test_generation_change_is_reported_before_processing_new_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            responder.state.advance_cursor("room", 1)
+            responder.state.observe_generation("room", 1)
+
+            events = responder.process_snapshot(
+                RoomSnapshot(
+                    "room",
+                    2,
+                    2,
+                    (RoomMessage(2, PEER, "not-a-command", "2"),),
+                    generation=2,
+                )
+            )
+
+            self.assertEqual(events[0]["event"], "room_generation_changed")
+            self.assertEqual(events[1]["event"], "ignore")
+            persisted = AgentState.load(root / "state.json")
+            self.assertEqual(persisted.generation_for("room"), 2)
+            self.assertEqual(persisted.cursor_for("room"), 2)
+
+    def test_empty_snapshot_persists_first_observed_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(root, send=True, client=FakeClient())
+
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 0, 0, (), generation=1)
+            )
+
+            self.assertEqual(events, [])
+            persisted = AgentState.load(root / "state.json")
+            self.assertEqual(persisted.generation_for("room"), 1)
+            self.assertEqual(persisted.cursor_for("room"), 0)
+
+    def test_generation_regression_halts_before_processing_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            responder.state.advance_cursor("room", 4)
+            responder.state.observe_generation("room", 2)
+
+            with self.assertRaisesRegex(ResponseError, "generation moved backwards"):
+                responder.process_snapshot(
+                    RoomSnapshot(
+                        "room",
+                        5,
+                        5,
+                        (RoomMessage(5, PEER, "/ping", "5"),),
+                        generation=1,
+                    )
+                )
+
+            self.assertEqual(client.posts, [])
             self.assertEqual(responder.state.cursor_for("room"), 4)
 
     def test_receipt_dry_run_never_contacts_github_or_writes(self) -> None:

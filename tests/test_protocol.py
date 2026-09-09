@@ -52,6 +52,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     "count": 2,
                     "first_seq": 1,
                     "last_seq": 2,
+                    "generation": 1,
                     "messages": [
                         {"seq": 1, "from": DID, "nonce": 4, "text": "/ping"},
                         posted,
@@ -67,6 +68,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 "count": 1,
                 "first_seq": 1,
                 "last_seq": 1,
+                "generation": 1,
                 "messages": [{"seq": 1, "from": DID, "nonce": 4, "text": "/ping"}],
             }
         )
@@ -92,6 +94,7 @@ class ProtocolTests(unittest.TestCase):
             "test-room", since=0, wait=0, limit=7, cache_buster=3
         )
         self.assertEqual(snapshot.messages[0].text, "/ping")
+        self.assertEqual(snapshot.generation, 1)
         self.assertEqual(
             FixtureHandler.seen_get_query,
             {
@@ -126,6 +129,7 @@ class ProtocolTests(unittest.TestCase):
             "empty-room",
         )
         self.assertEqual((snapshot.first_seq, snapshot.last_seq), (0, 0))
+        self.assertEqual(snapshot.generation, 0)
 
     def test_empty_since_window_accepts_null_first_sequence_with_nonzero_tail(
         self,
@@ -145,6 +149,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(
             (snapshot.first_seq, snapshot.last_seq, snapshot.messages), (0, 7, ())
         )
+
+    def test_rejects_invalid_room_generation(self) -> None:
+        from technocore_safe_agent.protocol import ResponseError, _parse_snapshot
+
+        with self.assertRaisesRegex(ResponseError, "generation"):
+            _parse_snapshot(
+                {
+                    "room": "test-room",
+                    "count": 0,
+                    "first_seq": None,
+                    "last_seq": 0,
+                    "generation": True,
+                    "messages": [],
+                },
+                "test-room",
+            )
 
     def test_sends_signed_get_and_validates_the_server_acknowledgement(self) -> None:
         posted = self.client.send_signed_message(

@@ -17,12 +17,14 @@ class StateTests(unittest.TestCase):
             path = Path(directory) / "agent.state.json"
             state = AgentState()
             state.advance_cursor("room", 9)
+            self.assertFalse(state.observe_generation("room", 2))
             self.assertEqual(state.next_nonce("room", 100), 100)
             self.assertEqual(state.next_nonce("room", 50), 101)
             state.save(path)
 
             loaded = AgentState.load(path)
             self.assertEqual(loaded.cursor_for("room"), 9)
+            self.assertEqual(loaded.generation_for("room"), 2)
             self.assertEqual(loaded.nonces["room"], 101)
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
@@ -60,6 +62,15 @@ class StateTests(unittest.TestCase):
             state = AgentState.load(path)
 
             self.assertEqual(state.capability_requests, {})
+            self.assertIsNone(state.generation_for("room"))
+
+    def test_generation_change_is_monotonic_and_explicit(self) -> None:
+        state = AgentState()
+        self.assertFalse(state.observe_generation("room", 1))
+        self.assertFalse(state.observe_generation("room", 1))
+        self.assertTrue(state.observe_generation("room", 2))
+        with self.assertRaisesRegex(StateError, "generation.*backwards"):
+            state.observe_generation("room", 1)
 
     def test_rejects_invalid_capability_principal_in_persistent_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
