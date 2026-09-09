@@ -20,6 +20,7 @@ class StateError(RuntimeError):
 class AgentState:
     cursors: dict[str, int] = field(default_factory=dict)
     nonces: dict[str, int] = field(default_factory=dict)
+    generations: dict[str, int] = field(default_factory=dict)
     capability_requests: dict[str, list[int]] = field(default_factory=dict)
 
     @classmethod
@@ -38,12 +39,16 @@ class AgentState:
             raise StateError("state file has an unsupported schema")
         cursors = _nonnegative_int_map(payload.get("cursors"), "cursors")
         nonces = _nonnegative_int_map(payload.get("nonces"), "nonces")
+        generations = _nonnegative_int_map(
+            payload.get("generations", {}), "generations"
+        )
         capability_requests = _capability_request_map(
             payload.get("capability_requests", {})
         )
         return cls(
             cursors=cursors,
             nonces=nonces,
+            generations=generations,
             capability_requests=capability_requests,
         )
 
@@ -55,6 +60,17 @@ class AgentState:
         if sequence < self.cursor_for(room):
             raise StateError("refusing to move a room cursor backwards")
         self.cursors[room] = sequence
+
+    def generation_for(self, room: str) -> int | None:
+        return self.generations.get(room)
+
+    def observe_generation(self, room: str, generation: int) -> bool:
+        _require_nonnegative_int(generation, "room generation")
+        previous = self.generations.get(room)
+        if previous is not None and generation < previous:
+            raise StateError("refusing to move a room generation backwards")
+        self.generations[room] = generation
+        return previous is not None and generation > previous
 
     def next_nonce(self, room: str, clock_value: int) -> int:
         _require_nonnegative_int(clock_value, "clock nonce")
@@ -109,6 +125,8 @@ class AgentState:
             "cursors": dict(sorted(self.cursors.items())),
             "nonces": dict(sorted(self.nonces.items())),
         }
+        if self.generations:
+            payload["generations"] = dict(sorted(self.generations.items()))
         if self.capability_requests:
             payload["capability_requests"] = {
                 did: timestamps

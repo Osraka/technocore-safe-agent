@@ -72,6 +72,7 @@ class RoomSnapshot:
     first_seq: int
     last_seq: int
     messages: tuple[RoomMessage, ...]
+    generation: int = 0
 
 
 def validate_base_url(base_url: str) -> str:
@@ -190,6 +191,13 @@ def _parse_snapshot(payload: dict[str, Any], expected_room: str) -> RoomSnapshot
         first_seq = 0
     if isinstance(first_seq, bool) or not isinstance(first_seq, int) or first_seq < 0:
         raise ResponseError("Technocore returned an invalid first_seq")
+    generation = payload.get("generation", 0)
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+    ):
+        raise ResponseError("Technocore returned an invalid generation")
     messages = tuple(_parse_message(item) for item in raw_messages)
     sequences = [message.seq for message in messages]
     if sequences != sorted(sequences) or len(sequences) != len(set(sequences)):
@@ -203,6 +211,7 @@ def _parse_snapshot(payload: dict[str, Any], expected_room: str) -> RoomSnapshot
         first_seq=first_seq,
         last_seq=last_seq,
         messages=messages,
+        generation=generation,
     )
 
 

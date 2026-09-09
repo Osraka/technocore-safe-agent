@@ -57,6 +57,7 @@ class SafeResponder:
         snapshot = self.client.read_room(
             self.room, since=0, wait=0, limit=1, cache_buster=0
         )
+        self.state.observe_generation(self.room, snapshot.generation)
         self.state.advance_cursor(self.room, snapshot.last_seq)
         if self.send:
             self.state.save(self.state_path)
@@ -71,6 +72,23 @@ class SafeResponder:
         if snapshot.room != self.room:
             raise ResponseError("agent received a snapshot for a different room")
         events: list[dict[str, Any]] = []
+        previous_generation = self.state.generation_for(self.room)
+        try:
+            generation_changed = self.state.observe_generation(
+                self.room, snapshot.generation
+            )
+        except StateError as error:
+            raise ResponseError("Technocore room generation moved backwards") from error
+        generation_needs_persist = previous_generation is None or generation_changed
+        if generation_changed:
+            events.append(
+                {
+                    "event": "room_generation_changed",
+                    "room": self.room,
+                    "previous_generation": previous_generation,
+                    "generation": snapshot.generation,
+                }
+            )
         cursor = self.state.cursor_for(self.room)
         if snapshot.first_seq > 0 and snapshot.first_seq > cursor + 1:
             events.append(
@@ -83,12 +101,14 @@ class SafeResponder:
             )
 
         handled = False
+        state_persisted = False
         for message in snapshot.messages:
             if message.seq <= cursor:
                 continue
             handled = True
             event = self._event_for_message(message)
             self._persist_processed_message(message, event)
+            state_persisted = self.send
             cursor = message.seq
             events.append(event)
 
@@ -97,6 +117,7 @@ class SafeResponder:
             self.state.advance_cursor(self.room, snapshot.last_seq)
             if self.send:
                 self.state.save(self.state_path)
+                state_persisted = True
             events.append(
                 {
                     "event": "cursor_advanced_over_unavailable_messages",
@@ -105,6 +126,8 @@ class SafeResponder:
                     "to": snapshot.last_seq,
                 }
             )
+        if self.send and generation_needs_persist and not state_persisted:
+            self.state.save(self.state_path)
         return events
 
     def _event_for_message(self, message: RoomMessage) -> dict[str, Any]:
