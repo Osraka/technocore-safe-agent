@@ -197,6 +197,13 @@ Only one live sender can use an identity at a time. A stale `safe-agent.lock` fi
 is harmless because ownership is enforced by the operating-system lock, not by
 the file's presence.
 
+Polling read failures honor a valid numeric `Retry-After` without shortening it
+to the normal backoff cap. Missing or invalid delays use exponential backoff from
+1 to 30 seconds, reset after a successful poll. Waits have a 0.5-second minimum
+and remain interruptible, including when the server asks for a long cooldown.
+`--once` does not retry. This applies only to reads; an ambiguous signed write
+still stops for explicit delivery recovery.
+
 ### Recover an interrupted delivery
 
 If a live write times out, the agent stops and leaves
