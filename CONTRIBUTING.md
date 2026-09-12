@@ -32,8 +32,11 @@ python -m build
 ```
 
 The test suite must use temporary directories and local fixtures. It must not
-read the real macOS Keychain, contact Technocore or GitHub, send room messages,
-or depend on a developer's runtime state.
+read the real macOS Keychain, contact hosted Technocore or GitHub endpoints,
+send live room messages, or depend on a developer's runtime state. The explicit
+[integration gate](docs/technocore-compatibility.md) uses a real server on
+loopback with disposable test rooms and keys; dependency setup requires downloads,
+but its tests do not contact external services.
 
 ## Live-operation boundary
 
