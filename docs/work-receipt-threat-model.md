@@ -44,6 +44,11 @@ and Keychain selectors are not included. Command arguments are included and are
 therefore public if the artifact is published; do not place secrets or private
 paths in argv.
 
+An opt-in [private output bundle](work-output-bundles.md) preserves stdout/stderr
+as separate local files, never as fields in the signed receipt. Default output
+retention remains disabled. Private file permissions do not make sharing those
+files safe; raw output may disclose secrets that a hash would not reveal.
+
 ## State table
 
 | Initial state or outcome | `create` | `countersign` |

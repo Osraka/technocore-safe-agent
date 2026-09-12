@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -288,6 +289,7 @@ def _execute(
     timeout_ms: int,
     clock: Callable[[], datetime],
     monotonic: Callable[[], float],
+    capture: Callable[[Any, Any], None] | None = None,
 ) -> _Execution:
     argv = _validate_command(command)
     started_at = _format_timestamp(clock())
@@ -315,12 +317,22 @@ def _execute(
             except ProcessLookupError:
                 pass
             return_code = process.wait()
+        except BaseException:
+            # Do not leave the explicitly launched job running after Ctrl+C.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
 
         elapsed = monotonic() - started
         duration_ms = max(0, round(elapsed * 1000))
         completed_at = _format_timestamp(clock())
         stdout_sha256, stdout_bytes = _hash_file(stdout, "stdout")
         stderr_sha256, stderr_bytes = _hash_file(stderr, "stderr")
+        if capture is not None:
+            capture(stdout, stderr)
 
     if timed_out:
         result = "timed_out"
@@ -367,6 +379,7 @@ def create_work_receipt(
     issuer_did: str,
     private_key: Ed25519PrivateKey,
     timeout: float,
+    output_directory: Path | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -378,41 +391,52 @@ def create_work_receipt(
         raise WorkReceiptError("work receipt signing key does not match its issuer DID")
     checkout = _inspect_checkout(repository)
     timeout_ms = _timeout_milliseconds(timeout)
-    execution = _execute(
-        checkout,
-        command,
-        timeout_ms=timeout_ms,
-        clock=clock,
-        monotonic=monotonic,
-    )
-    after = _inspect_checkout(checkout.root, expected_commit=checkout.commit)
-    if after.repository != checkout.repository:
-        raise WorkReceiptError("checkout origin changed while the command was running")
-    payload: dict[str, Any] = {
-        "schema": WORK_RECEIPT_SCHEMA,
-        "issuer": issuer_did,
-        "repository": checkout.repository,
-        "commit": checkout.commit,
-        "command": _validate_command(command),
-        "timeout_ms": timeout_ms,
-        "result": execution.result,
-        "exit_code": execution.exit_code,
-        "stdout_sha256": execution.stdout_sha256,
-        "stdout_bytes": execution.stdout_bytes,
-        "stderr_sha256": execution.stderr_sha256,
-        "stderr_bytes": execution.stderr_bytes,
-        "started_at": execution.started_at,
-        "completed_at": execution.completed_at,
-        "duration_ms": execution.duration_ms,
-    }
-    _validate_work_payload(payload)
-    envelope = {
-        "schema": WORK_RECEIPT_ENVELOPE_SCHEMA,
-        "receipt": _signed_wrapper(payload, private_key),
-        "countersignatures": [],
-    }
-    verify_work_receipt(envelope)
-    return envelope
+    storage = nullcontext()
+    if output_directory is not None:
+        from technocore_safe_agent.work_output import OutputBundle
+
+        storage = OutputBundle(output_directory, checkout.root)
+    with storage as bundle:
+        execution = _execute(
+            checkout,
+            command,
+            timeout_ms=timeout_ms,
+            clock=clock,
+            monotonic=monotonic,
+            capture=bundle.capture if bundle else None,
+        )
+        after = _inspect_checkout(checkout.root, expected_commit=checkout.commit)
+        if after.repository != checkout.repository:
+            raise WorkReceiptError(
+                "checkout origin changed while the command was running"
+            )
+        payload: dict[str, Any] = {
+            "schema": WORK_RECEIPT_SCHEMA,
+            "issuer": issuer_did,
+            "repository": checkout.repository,
+            "commit": checkout.commit,
+            "command": _validate_command(command),
+            "timeout_ms": timeout_ms,
+            "result": execution.result,
+            "exit_code": execution.exit_code,
+            "stdout_sha256": execution.stdout_sha256,
+            "stdout_bytes": execution.stdout_bytes,
+            "stderr_sha256": execution.stderr_sha256,
+            "stderr_bytes": execution.stderr_bytes,
+            "started_at": execution.started_at,
+            "completed_at": execution.completed_at,
+            "duration_ms": execution.duration_ms,
+        }
+        _validate_work_payload(payload)
+        envelope = {
+            "schema": WORK_RECEIPT_ENVELOPE_SCHEMA,
+            "receipt": _signed_wrapper(payload, private_key),
+            "countersignatures": [],
+        }
+        verify_work_receipt(envelope)
+        if bundle is not None:
+            bundle.finish(envelope)
+        return envelope
 
 
 def countersign_work_receipt(
