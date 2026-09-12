@@ -50,6 +50,24 @@ jobs:
         run: python -m pip install --upgrade pip build
       - name: Build wheel and source distribution
         run: python -m build
+      - name: Verify integration files in source distribution
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+
+          source = Path("tests/interop")
+          archives = list(Path("dist").glob("*.tar.gz"))
+          assert len(archives) == 1, "expected one source distribution"
+          with tarfile.open(archives[0]) as archive:
+              prefix = archives[0].name.removesuffix(".tar.gz")
+              for path in sorted(source.iterdir()):
+                  if path.suffix in {".py", ".txt"}:
+                      member = archive.extractfile(f"{prefix}/{path.as_posix()}")
+                      assert member is not None, f"missing {path} in source distribution"
+                      with member:
+                          assert member.read() == path.read_bytes(), f"stale {path} in source distribution"
+          PY
 
   interop:
     name: Pinned Technocore compatibility
