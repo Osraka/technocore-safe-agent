@@ -914,7 +914,7 @@ def _poll(
             if args.once:
                 raise
             delay = error.retry_after if error.retry_after is not None else backoff
-            delay = min(max(delay, 0.5), 30.0)
+            delay = max(delay, 0.5)
             _print_event(
                 {
                     "event": "read_retry",
@@ -923,7 +923,11 @@ def _poll(
                     "http_status": error.status,
                 }
             )
-            time.sleep(delay)
+            # Bound each sleep, not the server's cooldown. A large Retry-After
+            # must neither overflow sleep() nor cause an early follow-up read.
+            deadline = time.monotonic() + delay
+            while (remaining := deadline - time.monotonic()) > 0:
+                time.sleep(min(remaining, 30.0))
             backoff = min(backoff * 2, 30.0)
         if args.once:
             return 0
