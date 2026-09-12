@@ -450,8 +450,10 @@ host that can see private prompts or files.
 ## Offline reproducible work receipts
 
 `work-receipt-v1` binds one explicit local command to a clean checkout with a
-canonical GitHub `origin`, exact commit, exit result, and stdout/stderr hashes. It does not store
-raw output or the local checkout path. A second Keychain-backed DID can rerun
+canonical GitHub `origin`, exact commit, exit result, and stdout/stderr hashes. The receipt does not
+contain raw output or the local checkout path. Raw output is discarded by default;
+an explicit [private output bundle](docs/work-output-bundles.md) can preserve the
+same execution's bytes outside the checkout. A second Keychain-backed DID can rerun
 the same command and countersign only when the repository, commit, result, exit
 code, and both output hashes match exactly.
 
@@ -471,6 +473,12 @@ technocore-safe-agent work-receipt create \
 
 technocore-safe-agent work-receipt verify /private/path/work-receipt.json
 ```
+
+To retain the original stdout/stderr alongside the receipt, add
+`--output-directory /private/path/new-evidence` before `--`. The destination must
+not exist, and its existing parent must be owned by you and not writable by
+others. This creates `stdout.bin`, `stderr.bin`, and `receipt.json` with private
+POSIX permissions. Outputs may contain secrets; nothing uploads them automatically.
 
 Independently rerun and countersign with a different identity:
 

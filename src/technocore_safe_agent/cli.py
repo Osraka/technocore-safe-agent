@@ -284,6 +284,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     work_receipt_create.add_argument("--timeout", type=float, default=300.0)
     work_receipt_create.add_argument(
+        "--output-directory",
+        type=Path,
+        help="opt in to private original output and receipt files in a new directory outside the checkout",
+    )
+    work_receipt_create.add_argument(
         "work_command",
         nargs=argparse.REMAINDER,
         help="command argv after --; no shell interpretation is performed",
@@ -686,6 +691,7 @@ def _work_receipt(args: argparse.Namespace) -> int:
             issuer_did=record.did,
             private_key=private_key,
             timeout=args.timeout,
+            output_directory=args.output_directory,
         )
         print(render_work_receipt(receipt), flush=True)
         return 0
