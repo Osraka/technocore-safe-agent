@@ -50,3 +50,32 @@ jobs:
         run: python -m pip install --upgrade pip build
       - name: Build wheel and source distribution
         run: python -m build
+
+  interop:
+    name: Pinned Technocore compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read server pin
+        id: server
+        run: echo "revision=$(cat tests/interop/server-revision.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: flop-labs/technocore-chat
+          ref: ${{ steps.server.outputs.revision }}
+          path: .interop-server
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: Install isolated server and client environments
+        run: |
+          uv sync --frozen --no-dev --project .interop-server
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python .
+      - name: Exercise the real server
+        run: >-
+          .venv/bin/python -B tests/interop/run.py
+          --server-checkout .interop-server
+          --server-python .interop-server/.venv/bin/python

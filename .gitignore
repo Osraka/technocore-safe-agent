@@ -1,4 +1,5 @@
 .venv/
+.interop-server/
 __pycache__/
 *.py[cod]
 .coverage
