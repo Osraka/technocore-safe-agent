@@ -157,6 +157,31 @@ class PollRetryTests(unittest.TestCase):
         self.events.assert_not_called()
         self.assertEqual(len(self.attempts), 1)
 
+    def test_unreadable_http_error_body_preserves_poll_cooldown_and_cursor(
+        self,
+    ) -> None:
+        body = io.BytesIO()
+        error = HTTPError(
+            "http://127.0.0.1/fixture", 503, "unavailable", {"Retry-After": "60"}, body
+        )
+        try:
+            with (
+                patch.object(body, "read", side_effect=OSError("interrupted")),
+                patch(
+                    "technocore_safe_agent.protocol.urlopen",
+                    side_effect=[error, StopPolling()],
+                ) as open_request,
+            ):
+                self._observe()
+            self.assertEqual(open_request.call_count, 2)
+            self.assertEqual(self.clock.sleeps, [30, 30])
+            self.assertEqual(self.state.cursor_for("fixture"), 7)
+            self.assertEqual(self.events.call_args.args[0]["http_status"], 503)
+            self.assertTrue(body.closed)
+            self.responder.process_snapshot.assert_not_called()
+        finally:
+            error.close()
+
     def test_ambiguous_write_is_not_retried(self) -> None:
         self.actions = [(200, None)]
         self.responder.process_snapshot.side_effect = UncertainWriteError("fixture")

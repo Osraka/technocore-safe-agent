@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.audit import AuditError, SignedAuditLog
@@ -20,6 +22,7 @@ from technocore_safe_agent.protocol import (
     ResponseError,
     RoomMessage,
     RoomSnapshot,
+    TechnocoreClient,
     TransportError,
 )
 from technocore_safe_agent.receipt import GitHubReceiptError
@@ -69,7 +72,7 @@ class AgentTests(unittest.TestCase):
         directory: Path,
         *,
         send: bool,
-        client: FakeClient,
+        client: FakeClient | TechnocoreClient,
         receipt_service: FakeReceiptService | None = None,
     ) -> SafeResponder:
         private_key = private_key_from_seed(SEED)
@@ -122,6 +125,45 @@ class AgentTests(unittest.TestCase):
                 )
             self.assertEqual(responder.state.cursor_for("room"), 0)
             self.assertFalse((root / "state.json").exists())
+
+    def test_unreadable_write_error_body_is_uncertain_and_never_retried(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = TechnocoreClient("http://127.0.0.1")
+            responder = self._responder(root, send=True, client=client)
+            journal = DeliveryJournal(root / "delivery.json")
+            responder.delivery_journal = journal
+            body = io.BytesIO()
+            error = HTTPError(
+                "http://127.0.0.1/fixture",
+                503,
+                "unavailable",
+                {"Retry-After": "60"},
+                body,
+            )
+            try:
+                with (
+                    patch.object(body, "read", side_effect=OSError("interrupted")),
+                    patch(
+                        "technocore_safe_agent.protocol.urlopen", side_effect=error
+                    ) as open_request,
+                ):
+                    with self.assertRaises(UncertainWriteError) as caught:
+                        responder.process_snapshot(
+                            RoomSnapshot(
+                                "room", 1, 1, (RoomMessage(1, PEER, "/ping", "1"),)
+                            )
+                        )
+                open_request.assert_called_once()
+                self.assertIsInstance(caught.exception.__cause__, TransportError)
+                self.assertEqual(responder.state.cursor_for("room"), 0)
+                self.assertFalse((root / "state.json").exists())
+                self.assertTrue(body.closed)
+                pending = journal.load()
+                self.assertIsNotNone(pending)
+                self.assertEqual(pending.status, "pending")
+            finally:
+                error.close()
 
     def test_acknowledged_write_with_failed_state_save_halts_as_uncertain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -2,6 +2,14 @@
 
 Notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- Report HTTP error-body read failures as `TransportError`, retaining the HTTP
+  status, retry delay and original cause while closing the response. Polling
+  retains its cooldown; ambiguous signed writes are not automatically retried.
+
 ## 0.3.0 - 2026-09-13
 
 ### Added
