@@ -7,6 +7,7 @@ import math
 import re
 import ssl
 from dataclasses import dataclass
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
@@ -135,6 +136,12 @@ def _request_json(request: Request, timeout: float) -> dict[str, Any]:
     except HTTPError as error:
         try:
             detail = _safe_error_detail(error.read(MAX_ERROR_BYTES))
+        except (OSError, HTTPException) as read_error:
+            raise TransportError(
+                f"Technocore returned HTTP {error.code}; error response body could not be read",
+                status=error.code,
+                retry_after=_retry_after(error.headers),
+            ) from read_error
         finally:
             error.close()
         message = f"Technocore returned HTTP {error.code}"
