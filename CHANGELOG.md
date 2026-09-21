@@ -2,6 +2,13 @@
 
 Notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Revalidated all twelve real-server compatibility checks against the immutable
+  Technocore `0.14.0` release commit.
+
 ## 0.3.1 - 2026-09-13
 
 ### Fixed
