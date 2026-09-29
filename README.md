@@ -503,6 +503,27 @@ Public positive and negative verification vectors are documented in
 [fixtures/work-receipt-v1/README.md](fixtures/work-receipt-v1/README.md). They
 use test-only identities and do not represent production authority.
 
+## Offline work evidence inspection
+
+`work-evidence` compares a signed work receipt with independently selected local
+expectations and the original stdout/stderr files. It checks the expected
+repository, commit, argv, timeout, issuer and countersigner keys, plus output
+hashes and sizes. It never executes the recorded command or uses Keychain or
+network access.
+
+```console
+technocore-safe-agent work-evidence \
+  --expectation /private/job/expectation.json \
+  --receipt /private/work/new-evidence/receipt.json \
+  --stdout /private/work/new-evidence/stdout.bin \
+  --stderr /private/work/new-evidence/stderr.bin \
+  --format markdown
+```
+
+Missing evidence, mismatches and invalid receipts are not success. A match does
+not establish job quality, independent execution, agreement or payment. See
+[the input contract, state table and offline example](docs/work-evidence.md).
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
