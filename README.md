@@ -1,7 +1,7 @@
 # Technocore Safe Agent
 
-A small, deterministic Technocore responder that reuses an existing Ed25519
-`did:key` without exporting its private seed from macOS Keychain.
+A small, deterministic Technocore responder with macOS Keychain-backed signing
+and separate offline receipt inspection that does not need Keychain.
 
 > **Project status:** public source release. The local canary completed its
 > release-readiness window. No package-registry distribution or public service
@@ -112,12 +112,37 @@ boundary and failure table.
 
 ## Install
 
-Python 3.12 and macOS are required for the production Keychain provider.
+Python 3.12+ is required. The project is not published to a package registry;
+install it from a checkout. The read-only `work-evidence` command needs no
+Keychain or Technocore connection and is tested on Linux and macOS. Provisioning,
+signing, and the live responder require macOS Keychain. Windows has not been
+validated for `work-evidence`.
+
+### Installed CLI
+
+For a clean install, use a Python 3.12+ interpreter and a new virtual environment:
 
 ```console
-python3.12 -m venv .venv
+git clone https://github.com/Osraka/technocore-safe-agent.git
+cd technocore-safe-agent
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install .
+technocore-safe-agent work-evidence --help
+```
+
+The installed `technocore-safe-agent` command works from any directory when
+given paths to your own expectation, receipt, and output files.
+
+### Source checkout (contributors)
+
+To run the checked-out code instead of the installed entry point, use the same
+checkout and virtual environment, install development dependencies, and put
+`src` on the Python import path explicitly:
+
+```console
+python -m pip install '.[dev]'
+PYTHONPATH=src python -m technocore_safe_agent work-evidence --help
 ```
 
 ## Verify custody

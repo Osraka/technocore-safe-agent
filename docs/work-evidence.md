@@ -103,7 +103,20 @@ output, not a missing output.
 
 ## Offline example
 
-From the repository root, using an environment with the project dependencies:
+From the repository root, after the [installed CLI setup](../README.md#installed-cli):
+
+```console
+technocore-safe-agent work-evidence \
+  --expectation fixtures/work-evidence-v1/expectation.json \
+  --receipt fixtures/work-receipt-v1/valid.json \
+  --stdout fixtures/work-evidence-v1/stdout.txt \
+  --stderr fixtures/work-evidence-v1/stderr.txt \
+  --format markdown
+```
+
+For development against the checked-out source instead, first install
+`.[dev]` as described in [Source checkout](../README.md#source-checkout-contributors),
+then run the same fixture through the source module:
 
 ```console
 PYTHONPATH=src python -m technocore_safe_agent work-evidence \
