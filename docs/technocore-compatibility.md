@@ -5,10 +5,10 @@ HTTP server. `tests/interop/run.py` runs twelve targeted checks against the
 revision in `tests/interop/server-revision.txt`, including the real client and
 responder. CI runs the same entry point in a separate Linux job.
 
-The current pin is the immutable Technocore `0.14.0` release commit
-(`11aedaf4c90002a3ac566effa4ac6a3a761cc2e4`). Updating it requires reviewing
-the upstream diff and rerunning every check; the gate never follows `main`
-implicitly.
+The current pin is Technocore commit
+`0e47f770b13cc27e1e2e199d4cdf70a4778c97cc` (version `0.14.5`, including
+post-release fixes). Updating it requires reviewing the upstream diff and
+rerunning every check; the gate never follows `main` implicitly.
 
 ## Reproduce from a clean checkout
 
