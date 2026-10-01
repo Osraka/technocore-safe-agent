@@ -1,7 +1,7 @@
 # Technocore Safe Agent
 
-A small, deterministic Technocore responder that reuses an existing Ed25519
-`did:key` without exporting its private seed from macOS Keychain.
+A small, deterministic Technocore responder with macOS Keychain-backed signing
+and separate offline receipt inspection that does not need Keychain.
 
 > **Project status:** public source release. The local canary completed its
 > release-readiness window. No package-registry distribution or public service
@@ -112,12 +112,37 @@ boundary and failure table.
 
 ## Install
 
-Python 3.12 and macOS are required for the production Keychain provider.
+Python 3.12+ is required. The project is not published to a package registry;
+install it from a checkout. The read-only `work-evidence` command needs no
+Keychain or Technocore connection and is tested on Linux and macOS. Provisioning,
+signing, and the live responder require macOS Keychain. Windows has not been
+validated for `work-evidence`.
+
+### Installed CLI
+
+For a clean install, use a Python 3.12+ interpreter and a new virtual environment:
 
 ```console
-python3.12 -m venv .venv
+git clone https://github.com/Osraka/technocore-safe-agent.git
+cd technocore-safe-agent
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install .
+technocore-safe-agent work-evidence --help
+```
+
+The installed `technocore-safe-agent` command works from any directory when
+given paths to your own expectation, receipt, and output files.
+
+### Source checkout (contributors)
+
+To run the checked-out code instead of the installed entry point, use the same
+checkout and virtual environment, install development dependencies, and put
+`src` on the Python import path explicitly:
+
+```console
+python -m pip install '.[dev]'
+PYTHONPATH=src python -m technocore_safe_agent work-evidence --help
 ```
 
 ## Verify custody
@@ -502,6 +527,27 @@ repository exists or is public.
 Public positive and negative verification vectors are documented in
 [fixtures/work-receipt-v1/README.md](fixtures/work-receipt-v1/README.md). They
 use test-only identities and do not represent production authority.
+
+## Offline work evidence inspection
+
+`work-evidence` compares a signed work receipt with independently selected local
+expectations and the original stdout/stderr files. It checks the expected
+repository, commit, argv, timeout, issuer and countersigner keys, plus output
+hashes and sizes. It never executes the recorded command or uses Keychain or
+network access.
+
+```console
+technocore-safe-agent work-evidence \
+  --expectation /private/job/expectation.json \
+  --receipt /private/work/new-evidence/receipt.json \
+  --stdout /private/work/new-evidence/stdout.bin \
+  --stderr /private/work/new-evidence/stderr.bin \
+  --format markdown
+```
+
+Missing evidence, mismatches and invalid receipts are not success. A match does
+not establish job quality, independent execution, agreement or payment. See
+[the input contract, state table and offline example](docs/work-evidence.md).
 
 ## Controlled live pilot
 
