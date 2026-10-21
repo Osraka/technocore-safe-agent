@@ -172,6 +172,10 @@ selected task with `bd show <id>` yourself before doing it, and change its
 status with Beads only after verifying the work. Beads supplies a queue, not a
 decision to run code or a proof that a task is complete.
 
+Beads may send anonymous command-usage metrics under its own settings. Run
+`bd metrics` to inspect that setting or `bd metrics off` to opt out; this agent
+does not change it for you.
+
 The adapter requires a local embedded `.beads` directory owned by the current
 user with no group/other permissions. It runs `bd ready` with `--readonly` and
 `--sandbox`, without shell interpretation or inherited service credential
