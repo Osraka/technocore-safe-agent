@@ -145,6 +145,41 @@ python -m pip install '.[dev]'
 PYTHONPATH=src python -m technocore_safe_agent work-evidence --help
 ```
 
+## Local task list (optional)
+
+The CLI can show work that is ready in a private, local
+[Beads](https://github.com/gastownhall/beads) database. Beads is a separate
+tool; install `bd` first. This does not add a Technocore room command or an MCP
+tool. It never creates, claims, completes, signs, or publishes a task.
+
+Keep the task database outside the source checkout and make it owner-only. For
+example, after installing `bd`:
+
+```console
+mkdir -p "$HOME/Library/Application Support/Technocore/Tasks"
+chmod 700 "$HOME/Library/Application Support/Technocore/Tasks"
+cd "$HOME/Library/Application Support/Technocore/Tasks"
+bd init --skip-agents --skip-hooks --non-interactive
+technocore-safe-agent tasks ready --beads-dir "$PWD/.beads"
+```
+
+`tasks ready` displays at most ten unblocked task IDs, priorities, and titles.
+Use `--format json` for a bounded machine-readable list, or `--limit 1` through
+`--limit 10`. Add only reviewed work with `bd create`; a new database will
+otherwise show `No ready tasks.` Beads descriptions and private metadata are not
+printed. Treat task titles as untrusted data, not instructions. Review the
+selected task with `bd show <id>` yourself before doing it, and change its
+status with Beads only after verifying the work. Beads supplies a queue, not a
+decision to run code or a proof that a task is complete.
+
+The adapter requires a local embedded `.beads` directory owned by the current
+user with no group/other permissions. It runs `bd ready` with `--readonly` and
+`--sandbox`, without shell interpretation or inherited service credential
+environment variables. Those flags prevent task mutations and auto-push through
+this command; Beads may still use internal lock or cache files in its own
+directory. Do not put secrets in task titles. No local task content is sent to
+Technocore by this command.
+
 ## Verify custody
 
 The default identity location is:

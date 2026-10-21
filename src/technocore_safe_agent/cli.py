@@ -13,6 +13,7 @@ from typing import Any
 from technocore_safe_agent import __version__
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.audit import AuditError, SignedAuditLog
+from technocore_safe_agent.beads_tasks import BeadsTasksError, list_ready_tasks
 from technocore_safe_agent.capabilities import (
     CapabilityError,
     CapabilityPolicyFile,
@@ -98,6 +99,16 @@ def _controller_identity_option(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_CONTROLLER_IDENTITY_PATH,
         help="public controller identity; private key remains in macOS Keychain",
     )
+
+
+def _ready_task_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 10") from error
+    if not 1 <= limit <= 10:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 10")
+    return limit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -336,6 +347,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-head",
         help="optional trusted SHA-256 checkpoint that also detects tail rollback",
     )
+
+    tasks = commands.add_parser(
+        "tasks", help="inspect a private local Beads queue without changing tasks"
+    )
+    task_commands = tasks.add_subparsers(dest="task_command", required=True)
+    task_ready = task_commands.add_parser("ready", help="list unblocked tasks")
+    task_ready.add_argument(
+        "--beads-dir", type=Path, required=True, help="absolute owner-only .beads path"
+    )
+    task_ready.add_argument("--limit", type=_ready_task_limit, default=10)
+    task_ready.add_argument("--format", choices=("text", "json"), default="text")
 
     run = commands.add_parser(
         "run", help="poll one room and apply the safe command policy"
@@ -772,6 +794,20 @@ def _audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tasks(args: argparse.Namespace) -> int:
+    if args.task_command != "ready":
+        raise BeadsTasksError("unsupported task command")
+    tasks = list_ready_tasks(args.beads_dir, limit=args.limit)
+    if args.format == "json":
+        _print_event({"status": "ready", "tasks": tasks})
+    elif not tasks:
+        print("No ready tasks.", flush=True)
+    else:
+        for task in tasks:
+            print(f"P{task['priority']} {task['id']} {task['title']}", flush=True)
+    return 0
+
+
 def _run(args: argparse.Namespace) -> int:
     record, private_key = _load_identity(args.identity)
     identity_path, config_path, default_state_path = _paths_beside_identity(args)
@@ -997,6 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
             "work-receipt": _work_receipt,
             "work-evidence": _work_evidence,
             "audit": _audit,
+            "tasks": _tasks,
             "run": _run,
         }[args.command]
         return handler(args)
@@ -1008,6 +1045,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except (
         AuditError,
+        BeadsTasksError,
         CapabilityError,
         ConfigError,
         ControllerError,
