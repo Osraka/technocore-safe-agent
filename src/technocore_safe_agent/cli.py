@@ -68,6 +68,11 @@ from technocore_safe_agent.receipt import (
     verify_signed_receipt,
 )
 from technocore_safe_agent.state import AgentState, StateError
+from technocore_safe_agent.work_evidence import (
+    EvidenceInputError,
+    inspect_work_evidence,
+    render_evidence_markdown,
+)
 from technocore_safe_agent.work_receipt import (
     WorkReceiptError,
     countersign_work_receipt,
@@ -310,6 +315,16 @@ def build_parser() -> argparse.ArgumentParser:
     work_receipt_countersign.add_argument(
         "path", type=Path, help="work receipt JSON file"
     )
+
+    work_evidence = commands.add_parser(
+        "work-evidence",
+        help="compare local expectations, signed receipt and outputs offline",
+    )
+    work_evidence.add_argument("--expectation", type=Path, required=True)
+    work_evidence.add_argument("--receipt", type=Path)
+    work_evidence.add_argument("--stdout", type=Path)
+    work_evidence.add_argument("--stderr", type=Path)
+    work_evidence.add_argument("--format", choices=("json", "markdown"), default="json")
 
     audit = commands.add_parser("audit", help="inspect the signed local audit log")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
@@ -723,6 +738,24 @@ def _work_receipt(args: argparse.Namespace) -> int:
     raise WorkReceiptError("unsupported work receipt command")
 
 
+def _work_evidence(args: argparse.Namespace) -> int:
+    try:
+        report = inspect_work_evidence(
+            expectation_path=args.expectation,
+            receipt_path=args.receipt,
+            stdout_path=args.stdout,
+            stderr_path=args.stderr,
+        )
+    except EvidenceInputError as error:
+        _print_event({"status": "input_error", "reason": str(error)})
+        return 2
+    if args.format == "markdown":
+        print(render_evidence_markdown(report), end="", flush=True)
+    else:
+        _print_event(report)
+    return 0 if report["status"] == "matches_local_expectations" else 1
+
+
 def _audit(args: argparse.Namespace) -> int:
     if args.audit_command != "verify":
         raise AuditError("unsupported audit command")
@@ -962,6 +995,7 @@ def main(argv: list[str] | None = None) -> int:
             "receipt": _receipt,
             "verify-receipt": _verify_receipt,
             "work-receipt": _work_receipt,
+            "work-evidence": _work_evidence,
             "audit": _audit,
             "run": _run,
         }[args.command]

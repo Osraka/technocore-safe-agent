@@ -1,0 +1,15 @@
+{
+  "schema": "work-evidence-expectation-v1",
+  "repository": "Osraka/technocore-safe-agent",
+  "commit": "104062644fd4ac33037246f49c4c0dafa63391b2",
+  "command": [
+    "python3",
+    "-c",
+    "print('fixture-ok')"
+  ],
+  "timeout_ms": 5000,
+  "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+  "required_verifiers": [
+    "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK"
+  ]
+}
