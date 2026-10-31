@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import copy
 import io
 import json
+import tempfile
 import unittest
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request
 
-from technocore_safe_agent.agent import UncertainWriteError
+from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.cli import _poll, main
-from technocore_safe_agent.protocol import TechnocoreClient, TransportError
+from technocore_safe_agent.crypto import did_from_private_key, private_key_from_seed
+from technocore_safe_agent.policy import CommandPolicy
+from technocore_safe_agent.protocol import (
+    RoomSnapshot,
+    ResponseError,
+    TechnocoreClient,
+    TransportError,
+)
 from technocore_safe_agent.state import AgentState
 
 
@@ -204,6 +214,78 @@ class PollRetryTests(unittest.TestCase):
             self.assertEqual(main(["run"]), 130)
         self.assertEqual(stderr.getvalue().strip(), "stopped")
         self.assertEqual(len(self.attempts), 1)
+
+    def test_checkpoint_regression_exits_cli_without_retry_or_state_change(
+        self,
+    ) -> None:
+        self.args.once = True
+        self.actions = [(200, None)]
+        self.state.advance_cursor("fixture", 100)
+        self.state.observe_generation("fixture", 0)
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            self.state.save(state_path)
+            before = state_path.read_bytes()
+            key = private_key_from_seed("01" * 32)
+            did = did_from_private_key(key)
+            self.responder = SafeResponder(
+                room="fixture",
+                did=did,
+                private_key=key,
+                client=self.client,
+                policy=CommandPolicy(own_did=did, allowed_dids=frozenset()),
+                state=self.state,
+                state_path=state_path,
+                send=True,
+            )
+            with (
+                patch(
+                    "technocore_safe_agent.cli._run",
+                    side_effect=lambda _: self._run_poll(),
+                ),
+                patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                patch(
+                    "technocore_safe_agent.cli._load_identity",
+                    side_effect=AssertionError("no Keychain"),
+                ),
+            ):
+                self.assertEqual(main(["run"]), 2)
+            self.assertIn("refusing automatic rewind", stderr.getvalue())
+            self.assertNotIn("fixture", stderr.getvalue())
+            self.assertNotIn(str(state_path), stderr.getvalue())
+            self.assertEqual(state_path.read_bytes(), before)
+        self.assertEqual(self.state.cursor_for("fixture"), 100)
+        self.assertEqual(self.clock.sleeps, [])
+        self.assertEqual(len(self.attempts), 1)
+        self.events.assert_not_called()
+
+    def test_poll_checkpoint_regression_is_refused_before_delegating(self) -> None:
+        self.state.advance_cursor("fixture", 100)
+        self.state.observe_nonce("fixture", 88)
+        self.state.observe_generation("fixture", 2)
+        before = copy.deepcopy(self.state)
+        for generation in (2, 3):
+            for once in (True, False):
+                self.args.once = once
+                with (
+                    self.subTest(generation=generation, once=once),
+                    patch.object(
+                        self.client,
+                        "read_room",
+                        side_effect=[
+                            RoomSnapshot("fixture", 0, 1, (), generation=generation),
+                            StopPolling(),
+                        ],
+                    ) as read,
+                ):
+                    with self.assertRaisesRegex(ResponseError, "checkpoint is behind"):
+                        self._run_poll()
+                    read.assert_called_once()
+                    self.assertEqual(read.call_args.kwargs["since"], 100)
+                    self.assertEqual(self.state, before)
+        self.responder.process_snapshot.assert_not_called()
+        self.events.assert_not_called()
+        self.assertEqual(self.clock.sleeps, [])
 
 
 if __name__ == "__main__":

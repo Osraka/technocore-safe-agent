@@ -975,13 +975,21 @@ def _poll(
     backoff = 1.0
     while True:
         try:
+            requested_cursor = state.cursor_for(room)
             snapshot = client.read_room(
                 room,
-                since=state.cursor_for(room),
+                since=requested_cursor,
                 wait=0 if args.once else args.wait,
                 limit=args.limit,
                 cache_buster=cache_buster,
             )
+            # last_seq is relative to this read, not a global room head. Only
+            # compare it with the saved cursor actually used for this poll.
+            if snapshot.last_seq < requested_cursor:
+                raise ResponseError(
+                    "room checkpoint is behind the saved cursor; refusing automatic rewind; "
+                    "inspect the deployment and saved state before resuming"
+                )
             for event in responder.process_snapshot(snapshot):
                 _print_event(event)
             backoff = 1.0
