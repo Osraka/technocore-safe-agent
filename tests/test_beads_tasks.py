@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from technocore_safe_agent import beads_tasks
 from technocore_safe_agent.beads_tasks import BeadsTasksError, list_ready_tasks
 from technocore_safe_agent.cli import main
 
@@ -41,7 +45,7 @@ class BeadsTasksTests(unittest.TestCase):
                 "technocore_safe_agent.beads_tasks.shutil.which", return_value="/bin/bd"
             ),
             patch(
-                "technocore_safe_agent.beads_tasks.subprocess.run",
+                "technocore_safe_agent.beads_tasks._query",
                 return_value=subprocess.CompletedProcess([], 0, raw, "warning"),
             ) as run,
         ):
@@ -97,7 +101,7 @@ class BeadsTasksTests(unittest.TestCase):
         (self.beads_dir / "metadata.json").write_text(
             json.dumps({"backend": "http"}), encoding="utf-8"
         )
-        with patch("technocore_safe_agent.beads_tasks.subprocess.run") as run:
+        with patch("technocore_safe_agent.beads_tasks._query") as run:
             with self.assertRaises(BeadsTasksError):
                 list_ready_tasks(self.beads_dir)
         run.assert_not_called()
@@ -151,14 +155,14 @@ class BeadsTasksTests(unittest.TestCase):
                 with (
                     self.subTest(raw=raw),
                     patch(
-                        "technocore_safe_agent.beads_tasks.subprocess.run",
+                        "technocore_safe_agent.beads_tasks._query",
                         return_value=subprocess.CompletedProcess([], 0, raw, ""),
                     ),
                 ):
                     with self.assertRaises(BeadsTasksError):
                         list_ready_tasks(self.beads_dir)
             with patch(
-                "technocore_safe_agent.beads_tasks.subprocess.run",
+                "technocore_safe_agent.beads_tasks._query",
                 return_value=subprocess.CompletedProcess([], 2, "", "private path"),
             ):
                 with self.assertRaises(BeadsTasksError) as caught:
@@ -174,12 +178,21 @@ class BeadsTasksTests(unittest.TestCase):
                 "technocore_safe_agent.beads_tasks.shutil.which", return_value="/bin/bd"
             ),
             patch(
-                "technocore_safe_agent.beads_tasks.subprocess.run",
+                "technocore_safe_agent.beads_tasks._query",
                 side_effect=subprocess.TimeoutExpired(["bd"], 10),
             ),
         ):
             with self.assertRaises(BeadsTasksError):
                 list_ready_tasks(self.beads_dir)
+
+    def test_unsupported_platform_is_refused_before_starting_a_query(self) -> None:
+        with (
+            patch.object(beads_tasks.os, "name", "nt"),
+            patch.object(beads_tasks, "_query") as query,
+            self.assertRaisesRegex(BeadsTasksError, "require macOS or Linux"),
+        ):
+            list_ready_tasks(self.beads_dir)
+        query.assert_not_called()
 
     def test_cli_prints_local_tasks_without_identity_or_network(self) -> None:
         output = io.StringIO()
@@ -221,6 +234,161 @@ class BeadsTasksTests(unittest.TestCase):
             code = main(["tasks", "ready", "--beads-dir", str(self.beads_dir)])
         self.assertEqual(code, 2)
         self.assertIn("beads query failed", error_output.getvalue())
+
+
+@unittest.skipUnless(os.name == "posix", "local Beads queries require POSIX pipes")
+class BeadsProcessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.database = self.root / ".beads"
+        self.database.mkdir(mode=0o700)
+        (self.database / "metadata.json").write_text(
+            json.dumps({"backend": "dolt", "dolt_mode": "embedded"})
+        )
+        self.binary = self.root / "bd"
+        self.children: list[subprocess.Popen] = []
+
+    def query(self, code: str):
+        self.binary.write_text(f"#!{sys.executable}\n{code}\n")
+        self.binary.chmod(0o700)
+        real_popen = subprocess.Popen
+
+        def start(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            self.children.append(process)
+            return process
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HOME": str(self.root),
+                    "PATH": str(self.root),
+                    "LANG": "C.UTF-8",
+                    "GH_TOKEN": "synthetic-not-a-credential",
+                },
+                clear=True,
+            ),
+            patch.object(beads_tasks.subprocess, "Popen", side_effect=start),
+        ):
+            return list_ready_tasks(self.database)
+
+    def assert_reaped(self) -> None:
+        self.assertEqual(len(self.children), 1)
+        process = self.children[0]
+        self.assertIsNotNone(process.returncode)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(process.pid, 0)
+
+    def test_oversized_stdout_is_rejected_before_the_child_exits(self) -> None:
+        with (
+            patch.object(beads_tasks, "QUERY_TIMEOUT_SECONDS", 5),
+            self.assertRaisesRegex(BeadsTasksError, "result is too large"),
+        ):
+            self.query(
+                "import os, time\n"
+                "open('pid', 'w').write(str(os.getpid()))\n"
+                "os.write(1, b'x' * 65537)\n"
+                "time.sleep(60)"
+            )
+        self.assert_reaped()
+
+    def test_oversized_stderr_is_rejected_while_stdout_remains_open(self) -> None:
+        with (
+            patch.object(beads_tasks, "QUERY_TIMEOUT_SECONDS", 5),
+            self.assertRaisesRegex(BeadsTasksError, "result is too large"),
+        ):
+            self.query(
+                "import os, time\n"
+                "open('pid', 'w').write(str(os.getpid()))\n"
+                "os.write(1, b'[]')\n"
+                "os.write(2, b'x' * 4097)\n"
+                "time.sleep(60)"
+            )
+        self.assert_reaped()
+
+    def test_exact_stdout_and_stderr_limits_allow_valid_json(self) -> None:
+        self.assertEqual(
+            self.query(
+                "import sys\n"
+                "sys.stdout.buffer.write(b'[]' + b' ' * 65534)\n"
+                "sys.stderr.buffer.write(b'x' * 4096)"
+            ),
+            [],
+        )
+
+    def test_real_child_preserves_readonly_argv_and_filters_credentials(self) -> None:
+        self.query(
+            "import json, os, sys\n"
+            "open('observed.json', 'w').write(json.dumps({\n"
+            " 'argv': sys.argv[1:], 'directory': os.environ.get('BEADS_DIR'),\n"
+            " 'credential_present': 'GH_TOKEN' in os.environ,\n"
+            " 'session': os.getsid(0), 'pid': os.getpid()}))\n"
+            "print('[]')"
+        )
+        observed = json.loads((self.root / "observed.json").read_text())
+        self.assertEqual(
+            observed["argv"],
+            ["--readonly", "--sandbox", "ready", "--json", "--brief", "--limit", "10"],
+        )
+        self.assertEqual(observed["directory"], str(self.database))
+        self.assertFalse(observed["credential_present"])
+        self.assertEqual(observed["session"], observed["pid"])
+
+    def test_multibyte_stdout_is_limited_by_bytes(self) -> None:
+        with self.assertRaisesRegex(BeadsTasksError, "result is too large"):
+            self.query("import sys; sys.stdout.buffer.write(b'\\xc3\\xa9' * 32769)")
+
+    def test_invalid_utf8_and_nonzero_exit_keep_diagnostics_private(self) -> None:
+        for code in (
+            "import os; os.write(1, b'\\xff')",
+            "import sys; sys.stderr.write('private fixture diagnostic'); sys.exit(2)",
+        ):
+            with self.subTest(code=code), self.assertRaises(BeadsTasksError) as caught:
+                self.query(code)
+            self.assertEqual(str(caught.exception), "Beads query failed")
+
+    def test_closed_pipes_do_not_bypass_the_process_deadline(self) -> None:
+        with (
+            patch.object(beads_tasks, "QUERY_TIMEOUT_SECONDS", 5),
+            self.assertRaisesRegex(BeadsTasksError, "query timed out"),
+        ):
+            self.query(
+                "import os, time\n"
+                "open('pid', 'w').write(str(os.getpid()))\n"
+                "os.close(1); os.close(2)\n"
+                "time.sleep(60)"
+            )
+        self.assert_reaped()
+
+    def test_inherited_pipe_timeout_stops_the_owned_process_group(self) -> None:
+        with (
+            patch.object(beads_tasks, "QUERY_TIMEOUT_SECONDS", 5),
+            patch.object(beads_tasks.os, "killpg", wraps=os.killpg) as kill_group,
+            self.assertRaisesRegex(BeadsTasksError, "query timed out"),
+        ):
+            self.query(
+                "import os, subprocess, sys\n"
+                "open('pid', 'w').write(str(os.getpid()))\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])"
+            )
+        kill_group.assert_called_once_with(self.children[0].pid, signal.SIGKILL)
+        self.assert_reaped()
+
+    def test_interruption_kills_and_reaps_the_query(self) -> None:
+        with (
+            patch.object(
+                beads_tasks.selectors.DefaultSelector,
+                "select",
+                side_effect=KeyboardInterrupt,
+            ),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.query("import time; time.sleep(60)")
+        self.assert_reaped()
+        self.assertEqual(self.children[0].returncode, -signal.SIGKILL)
 
 
 if __name__ == "__main__":

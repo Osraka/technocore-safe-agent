@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
 import shutil
+import signal
 import stat
 import subprocess
+import time
 import unicodedata
 from pathlib import Path
 from typing import TypedDict
@@ -15,6 +18,7 @@ from typing import TypedDict
 MAX_READY_TASKS = 10
 MAX_METADATA_BYTES = 16_384
 MAX_RESULT_BYTES = 65_536
+MAX_STDERR_BYTES = 4_096
 QUERY_TIMEOUT_SECONDS = 10
 TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
@@ -36,6 +40,8 @@ def list_ready_tasks(
 
     if type(limit) is not int or not 1 <= limit <= MAX_READY_TASKS:
         raise BeadsTasksError("task limit must be between 1 and 10")
+    if os.name != "posix":
+        raise BeadsTasksError("local Beads queries require macOS or Linux")
     selected = beads_dir.expanduser()
     _check_local_database(selected)
 
@@ -52,7 +58,7 @@ def list_ready_tasks(
         {"BEADS_DIR": str(selected), "BD_NON_INTERACTIVE": "1", "NO_COLOR": "1"}
     )
     try:
-        result = subprocess.run(  # noqa: S603
+        result = _query(
             [
                 binary,
                 "--readonly",
@@ -65,11 +71,6 @@ def list_ready_tasks(
             ],
             cwd=selected.parent,
             env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=QUERY_TIMEOUT_SECONDS,
-            check=False,
         )
     except FileNotFoundError as error:
         raise BeadsTasksError("Beads CLI (bd) is not available") from error
@@ -88,6 +89,64 @@ def list_ready_tasks(
     if not isinstance(rows, list) or len(rows) > limit:
         raise BeadsTasksError("Beads returned an invalid task list")
     return [_task_from_row(row) for row in rows]
+
+
+def _query(
+    argv: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
+    with subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        try:
+            assert process.stdout is not None and process.stderr is not None
+            output = bytearray()
+            with selectors.DefaultSelector() as selector:
+                for stream, maximum in (
+                    (process.stdout, MAX_RESULT_BYTES),
+                    (process.stderr, MAX_STDERR_BYTES),
+                ):
+                    os.set_blocking(stream.fileno(), False)
+                    selector.register(stream, selectors.EVENT_READ, maximum)
+                sizes = {
+                    stream.fileno(): 0 for stream in (process.stdout, process.stderr)
+                }
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(argv, QUERY_TIMEOUT_SECONDS)
+                    for key, _ in selector.select(remaining):
+                        try:
+                            chunk = os.read(
+                                key.fd, min(8192, key.data - sizes[key.fd] + 1)
+                            )
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        sizes[key.fd] += len(chunk)
+                        if sizes[key.fd] > key.data:
+                            raise BeadsTasksError("Beads result is too large")
+                        if key.fileobj is process.stdout:
+                            output.extend(chunk)
+            code = process.wait(timeout=max(0, deadline - time.monotonic()))
+        except BaseException:
+            # A descendant can keep a pipe open after bd exits. Stop the owned
+            # session too, rather than waiting for its inherited descriptors.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+    return subprocess.CompletedProcess(argv, code, output.decode("utf-8"), "")
 
 
 def _check_local_database(path: Path) -> None:
