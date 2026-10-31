@@ -82,3 +82,15 @@ or delivery content.
 Run `technocore-safe-agent doctor` separately when private-key custody must be
 verified. A successful health result does not prove Keychain availability,
 network reachability, remote room health, or that a process will remain alive.
+
+## Room checkpoint behind the saved cursor
+
+During polling, a room checkpoint below the saved cursor stops the responder
+with exit 2 and `refusing automatic rewind`. The agent does not retry that
+response, replay older commands, or change its cursor, nonce, generation or
+delivery state. Offline health cannot detect this remote checkpoint mismatch.
+
+Before resuming, check that the configured deployment and room match the saved
+state, and investigate any server restore or migration. Do not delete state or
+lower the cursor to silence the error: those records protect against replay.
+Retain the private state and any pending delivery journal for manual recovery.

@@ -12,16 +12,22 @@ import json
 from pathlib import Path
 import time
 import unittest
+from argparse import Namespace
 from urllib.request import ProxyHandler, build_opener
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from technocore_safe_agent.agent import SafeResponder, UncertainWriteError
 from technocore_safe_agent.audit import SignedAuditLog
+from technocore_safe_agent.cli import _poll
 from technocore_safe_agent.crypto import did_from_private_key, sign_room_message
 from technocore_safe_agent.delivery import DeliveryJournal
 from technocore_safe_agent.delivery_recovery import recover_delivery
 from technocore_safe_agent.policy import CommandPolicy
-from technocore_safe_agent.protocol import TechnocoreClient, TransportError
+from technocore_safe_agent.protocol import (
+    ResponseError,
+    TechnocoreClient,
+    TransportError,
+)
 from technocore_safe_agent.state import AgentState
 
 from fixture import server as local_server
@@ -65,6 +71,31 @@ def responder(client, root, peer, *, room="pilot", send=False):
 
 
 class LocalCompatibility(unittest.TestCase):
+    def test_checkpoint_behind_saved_cursor_halts_without_reply_or_rewind(self):
+        with server() as (client, root):
+            peer = Ed25519PrivateKey.generate()
+            post(client, peer, "pilot", 1, "/ping")
+            agent = responder(client, root, did_from_private_key(peer), send=True)
+            agent.state.advance_cursor("pilot", 100)
+            agent.state.save(agent.state_path)
+            before = agent.state_path.read_bytes()
+            snapshot = client.read_room("pilot", since=100, wait=0)
+            self.assertEqual(snapshot.last_seq, 1)
+            self.assertEqual(snapshot.messages, ())
+            with self.assertRaisesRegex(ResponseError, "refusing automatic rewind"):
+                _poll(
+                    Namespace(once=True, wait=0, limit=50),
+                    agent,
+                    agent.state,
+                    client,
+                    "pilot",
+                )
+            self.assertEqual(agent.state_path.read_bytes(), before)
+            self.assertEqual(agent.state.cursor_for("pilot"), 100)
+            self.assertEqual(client.read_room("pilot", since=0, wait=0).last_seq, 1)
+            self.assertFalse((root / "journal.json").exists())
+            self.assertFalse((root / "audit.jsonl").exists())
+
     def test_signed_ack_unicode_roundtrip_and_replay(self):
         with server() as (client, _):
             key = Ed25519PrivateKey.generate()
@@ -178,6 +209,16 @@ class LocalCompatibility(unittest.TestCase):
             self.assertEqual(events, [])
             self.assertEqual(agent.state.cursor_for("e-pilot"), 1)
             self.assertEqual(client.read_room("e-pilot", since=1, wait=0).last_seq, 1)
+            self.assertEqual(
+                _poll(
+                    Namespace(once=True, wait=0, limit=50),
+                    agent,
+                    agent.state,
+                    client,
+                    "e-pilot",
+                ),
+                0,
+            )
             self.assertEqual(post(client, peer, "e-pilot", 2, "/status").seq, 2)
             # A fresh consumer sees a missing prefix, not an invented contiguous history.
             fresh = responder(client, root, did_from_private_key(peer), room="e-pilot")

@@ -1,7 +1,7 @@
 # Real-server compatibility gate
 
 The agent's unit suite is not a substitute for exercising the actual upstream
-HTTP server. `tests/interop/run.py` runs twelve targeted checks against the
+HTTP server. `tests/interop/run.py` runs thirteen targeted checks against the
 revision in `tests/interop/server-revision.txt`, including the real client and
 responder. CI runs the same entry point in a separate Linux job.
 
@@ -43,6 +43,7 @@ does not recurse into this suite or silently skip it when the server is absent.
 | Lost acknowledgement after server commit | Halt, pending journal, read-only recovery finds the write |
 | Bootstrap and newest-N window | Start at current tail; surface a skipped prefix as a gap |
 | Expired history and new write | Preserve cursor; new sequence continues forward |
+| Server checkpoint behind saved cursor | Halt without a reply, rewind or persisted-state change |
 | Read rate budget | JSON remains parseable and 429 preserves retry metadata |
 | Plaintext budget warning | Prose is confined to the plaintext lane |
 | Delegation signature, expiry and narrowing | Use upstream's checker, including large decimal nonces |

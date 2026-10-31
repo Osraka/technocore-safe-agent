@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import io
 import json
 import tempfile
@@ -229,6 +230,64 @@ class AgentTests(unittest.TestCase):
             persisted = AgentState.load(root / "state.json")
             self.assertEqual(persisted.generation_for("room"), 1)
             self.assertEqual(persisted.cursor_for("room"), 0)
+
+    def test_older_history_snapshot_does_not_rewind_saved_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = FakeClient()
+            responder = self._responder(root, send=True, client=client)
+            responder.state = AgentState(
+                cursors={"room": 100},
+                nonces={"room": 88},
+                generations={"room": 2},
+            )
+            responder.state.save(root / "state.json")
+            before = copy.deepcopy(responder.state)
+            persisted = (root / "state.json").read_bytes()
+            snapshot = RoomSnapshot(
+                "room",
+                1,
+                1,
+                (RoomMessage(1, PEER, "/ping", "1"),),
+                generation=2,
+            )
+            self.assertEqual(responder.process_snapshot(snapshot), [])
+            self.assertEqual(responder.state, before)
+            self.assertEqual((root / "state.json").read_bytes(), persisted)
+            self.assertEqual(client.posts, [])
+
+    def test_current_and_forward_checkpoints_remain_usable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            responder = self._responder(root, send=True, client=FakeClient())
+            responder.state.advance_cursor("room", 100)
+            responder.state.observe_generation("room", 2)
+            self.assertEqual(
+                responder.process_snapshot(
+                    RoomSnapshot("room", 0, 100, (), generation=2)
+                ),
+                [],
+            )
+            events = responder.process_snapshot(
+                RoomSnapshot("room", 0, 105, (), generation=2)
+            )
+            self.assertEqual(
+                events[0]["event"], "cursor_advanced_over_unavailable_messages"
+            )
+            self.assertEqual(responder.state.cursor_for("room"), 105)
+            events = responder.process_snapshot(
+                RoomSnapshot(
+                    "room",
+                    110,
+                    110,
+                    (RoomMessage(110, PEER, "not-a-command", "110"),),
+                    generation=2,
+                )
+            )
+            self.assertEqual(
+                [event["event"] for event in events], ["retention_gap", "ignore"]
+            )
+            self.assertEqual(responder.state.cursor_for("room"), 110)
 
     def test_generation_regression_halts_before_processing_commands(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
