@@ -12,6 +12,10 @@ from typing import Any
 from technocore_safe_agent import __version__
 from technocore_safe_agent.audit import AuditError, SignedAuditLog
 from technocore_safe_agent.receipt import GitHubReceiptError, verify_signed_receipt
+from technocore_safe_agent.work_evidence import (
+    EvidenceInputError,
+    inspect_work_evidence as inspect_evidence_files,
+)
 
 MAX_RECEIPT_INPUT_BYTES = 4_096
 
@@ -92,13 +96,45 @@ def verify_audit_path(
     )
 
 
-def build_mcp_server(*, audit_path: Path | None = None) -> Any:
+def build_mcp_server(
+    *,
+    audit_path: Path | None = None,
+    work_expectation: Path | None = None,
+    work_receipt: Path | None = None,
+    work_stdout: Path | None = None,
+    work_stderr: Path | None = None,
+) -> Any:
     """Build a stdio-oriented MCP v2 server with no open-world operations."""
 
+    if work_expectation is None and any(
+        value is not None for value in (work_receipt, work_stdout, work_stderr)
+    ):
+        raise ValueError("work evidence inputs require an expectation")
     mcp_server, annotations_type = _mcp_types()
+    if work_expectation is not None:
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        class WorkEvidenceServer(mcp_server):
+            async def list_tools(self) -> list[Any]:
+                tools = await super().list_tools()
+                for tool in tools:
+                    if tool.name == "inspect_work_evidence":
+                        tool.input_schema["additionalProperties"] = False
+                return tools
+
+            async def call_tool(
+                self, name: str, arguments: dict[str, Any], context: Any = None
+            ) -> Any:
+                # The SDK otherwise ignores extra arguments to a no-argument tool.
+                # Refuse them before any read instead of implying a new file was checked.
+                if name == "inspect_work_evidence" and arguments:
+                    raise ToolError("inspect_work_evidence accepts no arguments")
+                return await super().call_tool(name, arguments, context)
+
+        mcp_server = WorkEvidenceServer
     server = mcp_server(
         "Technocore Safe Agent Verifier",
-        description="Offline verification for signed contribution receipts and audit integrity.",
+        description="Offline verification for contribution receipts, work evidence and audit integrity.",
         instructions=(
             "Read-only and closed-world. This server does not access Keychain, "
             "the network, Technocore rooms, arbitrary files, or write operations."
@@ -137,6 +173,34 @@ def build_mcp_server(*, audit_path: Path | None = None) -> Any:
         ) -> AuditVerification:
             return verify_audit_path(fixed_audit_path, expected_head=expected_head)
 
+    if work_expectation is not None:
+        fixed_work_paths = {
+            name: path.expanduser().absolute() if path is not None else None
+            for name, path in (
+                ("expectation_path", work_expectation),
+                ("receipt_path", work_receipt),
+                ("stdout_path", work_stdout),
+                ("stderr_path", work_stderr),
+            )
+        }
+
+        @server.tool(
+            name="inspect_work_evidence",
+            title="Inspect configured work evidence",
+            description=(
+                "Compare only operator-configured local work evidence with the configured "
+                "expectation. Accepts no arguments. Returns status/check tokens, not raw "
+                "output or paths. Does not prove execution, acceptance or payment."
+            ),
+            annotations=_read_only_annotations(annotations_type),
+            structured_output=True,
+        )
+        def inspect_work_evidence() -> dict[str, Any]:
+            try:
+                return inspect_evidence_files(**fixed_work_paths)
+            except EvidenceInputError:
+                return {"status": "input_error", "reason": "work_evidence_input_error"}
+
     return server
 
 
@@ -150,9 +214,33 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="fixed audit log exposed only through summary integrity checks",
     )
+    parser.add_argument(
+        "--work-expectation",
+        type=Path,
+        help="fixed operator expectation; enables offline work evidence inspection",
+    )
+    for stream in ("receipt", "stdout", "stderr"):
+        parser.add_argument(
+            f"--work-{stream}",
+            type=Path,
+            help=f"fixed work {stream} file; requires --work-expectation",
+        )
     args = parser.parse_args(argv)
+    if args.work_expectation is None and any(
+        value is not None
+        for value in (args.work_receipt, args.work_stdout, args.work_stderr)
+    ):
+        parser.error(
+            "--work-receipt, --work-stdout and --work-stderr require --work-expectation"
+        )
     try:
-        server = build_mcp_server(audit_path=args.audit_log)
+        server = build_mcp_server(
+            audit_path=args.audit_log,
+            work_expectation=args.work_expectation,
+            work_receipt=args.work_receipt,
+            work_stdout=args.work_stdout,
+            work_stderr=args.work_stderr,
+        )
     except MCPDependencyError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

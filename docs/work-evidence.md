@@ -3,7 +3,8 @@
 `work-evidence` answers a narrow question: does a signed `work-receipt-v1`
 match the operator's expectations and the supplied stdout/stderr bytes?
 It does not run the job, sign anything, contact a server, access Keychain, or
-modify an input file. It is a local CLI, not a chat command or MCP tool.
+modify an input file. It is a local CLI, not a chat command. The optional
+read-only MCP adapter exposes the same checks for operator-configured paths.
 
 ## Trust and input contract
 
@@ -134,6 +135,63 @@ as the receipt to obtain `invalid_receipt`, exit 1.
 The fixture expectation and output were derived from the existing public test
 vector **for demonstration only**. Its signing seeds are public; its timestamps
 are synthetic. It is not an independent pilot or production evidence.
+
+## Using an MCP client
+
+Install the optional SDK with `python -m pip install '.[mcp]'` in the checkout's
+virtual environment. Provisioning and signing are not needed. The MCP process
+stays on stdio; do not expect starting it in a terminal to print a report by
+itself. An MCP host starts it with operator-selected paths and invokes
+`inspect_work_evidence` with an empty object.
+
+For a runnable synthetic example, run this from the repository root with the
+installed `technocore-safe-agent-mcp` on `PATH`:
+
+```python
+import asyncio
+from pathlib import Path
+
+from mcp import Client, StdioServerParameters
+
+
+async def main():
+    root = Path.cwd()
+    server = StdioServerParameters(
+        command="technocore-safe-agent-mcp",
+        args=[
+            "--work-expectation",
+            str(root / "fixtures/work-evidence-v1/expectation.json"),
+            "--work-receipt",
+            str(root / "fixtures/work-receipt-v1/valid.json"),
+            "--work-stdout",
+            str(root / "fixtures/work-evidence-v1/stdout.txt"),
+            "--work-stderr",
+            str(root / "fixtures/work-evidence-v1/stderr.txt"),
+        ],
+    )
+    async with Client(server) as client:
+        result = await client.call_tool("inspect_work_evidence", {})
+        if result.is_error:
+            raise RuntimeError("MCP inspection failed")
+        print(result.structured_content["status"])
+
+
+asyncio.run(main())
+```
+
+Expected: `matches_local_expectations`. Omit `--work-stderr` and its value
+from the startup arguments to obtain `incomplete`. Select the existing
+`fixtures/work-receipt-v1/tampered-output.json` as the receipt to obtain
+`invalid_receipt`. For `does_not_match`, make a temporary copy of stdout, change
+its bytes, and select that copy at startup; do not overwrite the public fixture.
+
+The tool accepts no paths or other arguments from the model. Relative startup
+paths become absolute once, but their contents are checked anew on each call;
+keep the configured files stable. Missing/nonregular/oversized/symlinked inputs
+return a generic `input_error`, not a successful report or private diagnostic.
+Outputs and identifiers are not returned. The result retains all limitations
+above: it is not job execution, independent attestation, TCLK verification,
+acceptance or a payment instruction. See the [MCP threat model](mcp-threat-model.md).
 
 Focused checks:
 

@@ -54,8 +54,8 @@ in a message.
   hash-chained audit record containing only bounded decision metadata. Raw room
   names, message text, PR URLs, and peer DIDs are excluded.
 - The optional MCP entry point is stdio-only and read-only. It can verify a
-  bounded receipt supplied as data, and exposes an audit summary only when the
-  operator fixes one audit path at process startup.
+  bounded PR receipt supplied as data. Audit integrity and work-evidence checks
+  are exposed only for files the operator selects at process startup.
 - Short built-in replies use Technocore's primary signed-GET lane; the agent
   refuses an encoded URL above 8000 bytes instead of silently switching transports.
 - Cursor and nonce state is written atomically with mode `0600`.
@@ -525,7 +525,29 @@ arguments are equivalent to:
 }
 ```
 
-Both tools are annotated read-only, non-destructive, idempotent, and
+An operator can also expose `inspect_work_evidence` for one configured local
+job. It compares the signed work receipt and original output with an
+independently prepared expectation, using the same checks as the offline
+`work-evidence` CLI:
+
+```console
+technocore-safe-agent-mcp \
+  --work-expectation /absolute/path/to/expectation.json \
+  --work-receipt /absolute/path/to/receipt.json \
+  --work-stdout /absolute/path/to/stdout.bin \
+  --work-stderr /absolute/path/to/stderr.bin
+```
+
+The MCP client calls this tool with `{}`. It cannot supply a different file,
+command or expectation; additional arguments are rejected before any file read.
+Only status/check tokens are returned, not paths, keys, signatures or raw output.
+Without `--work-expectation`, the tool is absent. Omitted evidence produces
+`incomplete`; supplying an unreadable file produces `input_error` instead.
+This read-only path requires no Keychain and does not execute the job, assess
+payment, or establish independent execution. See the
+[synthetic MCP example](docs/work-evidence.md#using-an-mcp-client).
+
+All registered tools are annotated read-only, non-destructive, idempotent, and
 closed-world. These annotations are descriptive hints for MCP clients, not a
 security boundary. The implementation enforces the boundary by exposing no
 network transport option, Keychain access, Technocore operation, write path, or
