@@ -120,7 +120,17 @@ validated for `work-evidence`.
 
 ### Installed CLI
 
-For a clean install, use a Python 3.12+ interpreter and a new virtual environment:
+Check your Python version before creating the virtual environment:
+
+```console
+python3 --version
+```
+
+Continue only if it reports Python 3.12 or newer. Otherwise, install a newer
+Python and use its command (for example, `python3.12`) instead of `python3` in
+the virtual environment command below.
+
+For a clean install, use a new virtual environment:
 
 ```console
 git clone https://github.com/Osraka/technocore-safe-agent.git
@@ -149,8 +159,17 @@ PYTHONPATH=src python -m technocore_safe_agent work-evidence --help
 
 The CLI can show work that is ready in a private, local
 [Beads](https://github.com/gastownhall/beads) database. Beads is a separate
-tool; install `bd` first. This does not add a Technocore room command or an MCP
-tool. It never creates, claims, completes, signs, or publishes a task.
+tool; install `bd` first. On macOS with Homebrew:
+
+```console
+brew install beads
+bd version
+```
+
+For other installation methods, see the
+[Beads installation guide](https://github.com/gastownhall/beads/blob/main/docs/getting-started/installation.md).
+This does not add a Technocore room command or an MCP tool. It never creates,
+claims, completes, signs, or publishes a task.
 
 Keep the task database outside the source checkout and make it owner-only. For
 example, after installing `bd`:
