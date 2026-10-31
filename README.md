@@ -196,7 +196,10 @@ Beads may send anonymous command-usage metrics under its own settings. Run
 does not change it for you.
 
 The adapter requires a local embedded `.beads` directory owned by the current
-user with no group/other permissions. It runs `bd ready` with `--readonly` and
+user with no group/other permissions on macOS or Linux. Other platforms are
+refused before starting a query. The query has a ten-second deadline and stops
+its own process group if stdout exceeds 64 KiB or stderr exceeds 4 KiB; stderr
+is discarded rather than printed. It runs `bd ready` with `--readonly` and
 `--sandbox`, without shell interpretation or inherited service credential
 environment variables. Those flags prevent task mutations and auto-push through
 this command; Beads may still use internal lock or cache files in its own
