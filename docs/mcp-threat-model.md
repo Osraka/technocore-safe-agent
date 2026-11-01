@@ -76,6 +76,13 @@ file-change checks: expectation 32 KiB, receipt 128 KiB, each output 16 MiB.
 It does not require these inputs to be audit-log files or apply audit-specific
 ownership rules to them.
 
+The work-receipt validator lives in `work_receipt_verifier`, separate from the
+checkout/command runner in `work_receipt`. Importing the MCP adapter and checking
+work evidence does not import that runner, output-bundle writer or Keychain
+module. Fresh-interpreter tests enforce this import boundary; it is an
+auditability property, not an operating-system sandbox. The existing
+`work_receipt` verification imports remain available for callers.
+
 An input error returns `status: input_error` and the generic reason
 `work_evidence_input_error`, without the path or underlying exception text.
 Invalid receipts return `invalid_receipt` before opening output files. Missing
