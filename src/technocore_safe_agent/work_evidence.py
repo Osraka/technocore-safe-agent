@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from technocore_safe_agent.crypto import ProtocolValueError, validate_did
-from technocore_safe_agent.work_receipt import (
+from technocore_safe_agent.work_receipt_verifier import (
     GIT_SHA_PATTERN,
     MAX_COMMAND_ARGUMENTS,
     MAX_COMMAND_ARGUMENT_BYTES,
