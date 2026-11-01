@@ -130,6 +130,18 @@ Continue only if it reports Python 3.12 or newer. Otherwise, install a newer
 Python and use its command (for example, `python3.12`) instead of `python3` in
 the virtual environment command below.
 
+On macOS with Homebrew, one way to get a supported interpreter is:
+
+```console
+brew install python@3.12
+python3.12 --version
+```
+
+Then create the environment with `python3.12 -m venv .venv`. Without Homebrew,
+use the [official Python installers](https://www.python.org/downloads/macos/).
+Do not replace the operating system's Python. This requirement also applies
+to offline inspection; macOS itself is needed only for Keychain-backed signing.
+
 For a clean install, use a new virtual environment:
 
 ```console
@@ -143,6 +155,10 @@ technocore-safe-agent work-evidence --help
 
 The installed `technocore-safe-agent` command works from any directory when
 given paths to your own expectation, receipt, and output files.
+
+For a reproducible independent MCP check, use the separate
+[hash-pinned pilot instructions](docs/mcp-pilot.md). The normal installation
+above intentionally follows the package's supported dependency ranges.
 
 ### Source checkout (contributors)
 

@@ -193,6 +193,34 @@ class WorkEvidenceTests(unittest.TestCase):
         self.stderr.write_bytes(b"unexpected stderr")
         self.assertEqual(self.inspect()["checks"]["stderr"], "mismatch")
 
+    def test_non_utf8_output_is_compared_as_bytes(self):
+        outputs = {"stdout": b"\xff\x00\r\n", "stderr": b"\x80\xfe\n"}
+        payload = self.envelope["receipt"]["payload"]
+        for name, data in outputs.items():
+            getattr(self, name).write_bytes(data)
+            payload[f"{name}_sha256"] = hashlib.sha256(data).hexdigest()
+            payload[f"{name}_bytes"] = len(data)
+        raw = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode()
+        self.envelope["receipt"].update(
+            payload_sha256=hashlib.sha256(raw).hexdigest(),
+            signature=sign_detached(private_key_from_seed("11" * 32), raw),
+        )
+        self.envelope["countersignatures"] = []
+        self.expected["required_verifiers"] = []
+        self.save()
+        self.assertEqual(self.inspect()["status"], "matches_local_expectations")
+        for name, data in outputs.items():
+            with self.subTest(stream=name):
+                # Replacement decoding would hide this same-length byte change.
+                getattr(self, name).write_bytes(b"\xfd" + data[1:])
+                report = self.inspect()
+                self.assertEqual(report["checks"]["receipt"], "valid")
+                self.assertEqual(report["checks"][name], "mismatch")
+                self.assertEqual(report["status"], "does_not_match")
+                getattr(self, name).write_bytes(data)
+
     def test_valid_failed_and_timeout_receipts_never_report_success(self):
         for outcome, exit_code in (("failed", 1), ("timed_out", None)):
             with self.subTest(outcome=outcome):

@@ -37,6 +37,43 @@ jobs:
       - name: Smoke-test installed CLI
         run: technocore-safe-agent --version
 
+  mcp-pilot:
+    name: Pinned MCP pilot (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install hashed wheels and the reviewed local package
+        run: |
+          python -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r requirements/mcp-pilot.txt
+          python -m pip --isolated install --no-index --no-deps --no-build-isolation .
+          python -m pip check
+      - name: Run installed offline checks, including actual stdio
+        run: |
+          env -u PYTHONPATH python -B - <<'PY'
+          import unittest
+
+          groups = {
+              "test_mcp*.py": 28,
+              "test_work_verifier_imports.py": 3,
+              "test_work_evidence.py": 24,
+          }
+          for pattern, expected in groups.items():
+              suite = unittest.defaultTestLoader.discover("tests", pattern=pattern)
+              if suite.countTestCases() != expected:
+                  raise SystemExit(f"unexpected test discovery for {pattern}")
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              if not result.wasSuccessful() or result.skipped:
+                  raise SystemExit("pilot checks failed or skipped")
+          PY
+
   build:
     name: Build distributions
     runs-on: ubuntu-latest
