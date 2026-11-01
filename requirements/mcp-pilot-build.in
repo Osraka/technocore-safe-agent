@@ -1,0 +1,3 @@
+# Build the reviewed local package without fetching an isolated build backend.
+setuptools>=77
+wheel
