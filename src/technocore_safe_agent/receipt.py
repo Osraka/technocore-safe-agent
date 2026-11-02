@@ -678,7 +678,7 @@ def verify_signed_receipt(receipt: Mapping[str, Any] | str) -> dict[str, Any]:
     if isinstance(receipt, str):
         try:
             decoded = json.loads(receipt)
-        except json.JSONDecodeError as error:
+        except ValueError as error:
             raise GitHubReceiptError(
                 "receipt is not valid JSON", code="invalid_receipt"
             ) from error

@@ -384,7 +384,7 @@ def _decode_json(raw: bytes) -> Any:
 
     try:
         return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except ValueError as error:
         raise AuditError("audit record is not valid JSON") from error
 
 

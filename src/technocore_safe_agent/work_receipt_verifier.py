@@ -220,7 +220,7 @@ def _decode(receipt: Mapping[str, Any] | str) -> dict[str, Any]:
             raise WorkReceiptError("work receipt exceeds the artifact size limit")
         try:
             decoded = json.loads(receipt)
-        except json.JSONDecodeError as error:
+        except ValueError as error:
             raise WorkReceiptError("work receipt is not valid JSON") from error
     else:
         decoded = receipt
