@@ -112,11 +112,47 @@ boundary and failure table.
 
 ## Install
 
-Python 3.12+ is required. The project is not published to a package registry;
-install it from a checkout. The read-only `work-evidence` command needs no
+Python 3.12+ is required. Install a released wheel or use a source checkout;
+the project is not published to a package registry. The read-only `work-evidence`
+command needs no
 Keychain or Technocore connection and is tested on Linux and macOS. Provisioning,
 signing, and the live responder require macOS Keychain. Windows has not been
 validated for `work-evidence`.
+
+### Released wheel
+
+Download the wheel, source archive and `SHA256SUMS` from the matching
+[GitHub release](https://github.com/Osraka/technocore-safe-agent/releases).
+Check your interpreter first; see [Installed CLI](#installed-cli) if it is
+older than Python 3.12. From the directory containing all three downloads:
+
+```console
+python3 --version
+shasum -a 256 -c SHA256SUMS
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install ./technocore_safe_agent-0.4.0-py3-none-any.whl
+technocore-safe-agent --version
+technocore-safe-agent work-evidence --help
+```
+
+On Linux, `sha256sum -c SHA256SUMS` can replace `shasum`. Stop if either package
+hash fails. The checksum file detects changed download bytes; it is not a
+signature or an independent build attestation. Normal installation downloads
+dependencies from PyPI; the separate [MCP pilot](docs/mcp-pilot.md) provides a
+hash-pinned dependency recipe for its reviewed source revision.
+
+For the optional MCP adapter, install the wheel with its extra:
+
+```console
+python -m pip install './technocore_safe_agent-0.4.0-py3-none-any.whl[mcp]'
+technocore-safe-agent-mcp --help
+```
+
+The wheel needs no checkout when inspecting your own selected evidence. Public
+fixtures and the runnable consumer example are included in the source archive.
+Use the guide for the version you downloaded; `main` may include unreleased work.
+Do not install over a running responder's environment as an implicit upgrade.
 
 ### Installed CLI
 
