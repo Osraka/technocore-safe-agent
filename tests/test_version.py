@@ -11,3 +11,7 @@ class VersionTests(unittest.TestCase):
         metadata = tomllib.loads(pyproject.read_text(encoding="utf-8"))
 
         self.assertEqual(__version__, metadata["project"]["version"])
+
+    def test_current_version_has_release_notes(self) -> None:
+        changelog = Path(__file__).resolve().parents[1] / "CHANGELOG.md"
+        self.assertIn(f"## {__version__} - ", changelog.read_text(encoding="utf-8"))

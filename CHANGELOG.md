@@ -2,6 +2,44 @@
 
 Notable changes to this project are documented in this file.
 
+## 0.4.0 - 2026-11-02
+
+### Added
+
+- Offline `work-evidence` inspection against operator-selected expectations and
+  original stdout/stderr, with distinct match, mismatch, incomplete and invalid
+  receipt states. The optional stdio MCP adapter exposes only startup-selected
+  inputs and rejects model-selected paths.
+- A bounded, operator-invoked `tasks ready` view of a local embedded Beads queue.
+  It does not create, claim, execute or close tasks and is not an MCP tool.
+- Hash-pinned clean-install MCP pilot instructions, installed stdio tests, and
+  an external consumer example with explicit native/local format boundaries.
+
+### Fixed
+
+- Normalize JSON integer-conversion failures to the existing receipt and audit
+  input errors instead of leaking raw exceptions through CLI/MCP verification.
+- Bound Beads stdout/stderr while reading and terminate owned process groups
+  on timeout or output overflow.
+- Halt when a server checkpoint trails the saved cursor, without replying,
+  rewinding the cursor or overwriting persisted state.
+- Keep offline work-evidence verification independent of command-runner and
+  Keychain import paths.
+
+### Compatibility and operational notes
+
+- Thirteen real-server checks cover the pinned Technocore 0.14.5 implementation,
+  alongside Python 3.12/3.13/3.14 unit and installed-MCP CI jobs.
+- Receipt schemas and signing rules are unchanged. Expectations remain unsigned
+  operator input; a match is not authenticated agreement, proof of execution,
+  acceptance, payment or reward eligibility. This local format is not TCR-1 or
+  a native Technocore/TCLK receipt.
+- Offline inspection is exercised on Linux and macOS. Signing and the live
+  responder still require macOS Keychain; Windows is not validated.
+- No installed process is upgraded or restarted by this release. Deployment,
+  pending-delivery checks and any state migration require a separate operator
+  decision. Never roll back an old cursor/nonce snapshot.
+
 ## 0.3.2 - 2026-09-21
 
 ### Changed
