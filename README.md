@@ -648,6 +648,10 @@ Missing evidence, mismatches and invalid receipts are not success. A match does
 not establish job quality, independent execution, agreement or payment. See
 [the input contract, state table and offline example](docs/work-evidence.md).
 
+For a consumer reviewing a delivery, the
+[external consumer example](docs/technocore-consumer-example.md) shows the
+comparison without treating a local match as a native Technocore receipt.
+
 ## Controlled live pilot
 
 The repository includes an opt-in pilot that writes at most five bounded test
