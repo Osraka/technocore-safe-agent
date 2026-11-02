@@ -14,6 +14,10 @@ fields from an untrusted delivery and treat the resulting match as approval.
 The expectation is operator-controlled and unsigned; it is not an authenticated
 offer, acceptance, capability, or TCLK agreement.
 
+The [external consumer example](technocore-consumer-example.md) relates this
+boundary to Technocore's existing patterns and retention guidance, with a
+pinned synthetic comparison that requires no server or new signing format.
+
 Every field in the following table is required. Unknown fields are rejected.
 
 | Field | Meaning |
